@@ -8,19 +8,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Output of {@link RequiredFieldsExtractor#extract}. Splits the two concerns
- * that used to share a magic empty-string map key:
+ * Output of {@link RequiredFieldsExtractor#extract}: the required fields found in
+ * a request-body schema plus, kept separate, the root schema's
+ * {@code additionalProperties: false} closure.
  *
  * <ul>
- *   <li>{@code requiredFields} — path → descriptor for every required field
- *       discovered in the schema.</li>
- *   <li>{@code rootClosure} — non-null when the root schema declares
- *       {@code additionalProperties: false}, carrying the closed set of
- *       allowed top-level keys. Null otherwise.</li>
+ *   <li>{@code requiredFields} — path → descriptor for every required field, in
+ *       emission order.</li>
+ *   <li>{@code rootClosure} — the closed set of allowed top-level keys, or null
+ *       when the root is open.</li>
  * </ul>
  *
- * <p>The rule generator handles each separately: required fields become per-field
- * rules; the root closure becomes one extra "no unexpected top-level keys" rule.
+ * <p>The rule generator turns required fields into per-field rules and the root
+ * closure into one extra "no unexpected top-level keys" rule.
  */
 public record ExtractionResult(Map<String, FieldDescriptor> requiredFields,
                                ObjectTypeInfo rootClosure) {

@@ -25,7 +25,7 @@ class DiagnosticsTest {
     private final Diagnostics diagnostics = new Diagnostics(captured::add);
 
     @Test
-    void test_unsupported_if_then_predicate_does_emit_warning_as_expected() {
+    void test_unsupported_if_then_predicate_does_emit_warning() {
         // given — `if` with two-property predicate is outside the supported subset
         Schema<?> ifSchema = new Schema<>();
         ifSchema.addProperty("a", new Schema<>()._const("x"));
@@ -59,7 +59,7 @@ class DiagnosticsTest {
     }
 
     @Test
-    void test_oneof_without_discriminator_mapping_does_emit_warning_as_expected() {
+    void test_oneof_without_discriminator_mapping_does_emit_warning() {
         // given — oneOf with no discriminator falls back to union-merge
         Schema<?> first = new Schema<>().type("object");
         first.setRequired(List.of("a"));
@@ -89,7 +89,7 @@ class DiagnosticsTest {
     }
 
     @Test
-    void test_schema_form_additional_properties_does_emit_warning_as_expected() {
+    void test_schema_form_additional_properties_does_emit_warning() {
         // given — additionalProperties is a Schema, not a boolean
         Schema<?> schema = new Schema<>().type("object");
         schema.addProperty("name", new Schema<>().type("string"));
@@ -111,7 +111,27 @@ class DiagnosticsTest {
     }
 
     @Test
-    void test_supported_if_then_does_not_emit_warning_as_expected() {
+    void test_required_property_declared_nowhere_does_emit_warning() {
+        // given — `required` names a property no schema declares
+        Schema<?> root = new Schema<>().type("object");
+        root.setRequired(List.of("firstname"));
+        root.addProperty("firstName", new Schema<>().type("string"));
+        RequiredFieldsExtractor extractor = new RequiredFieldsExtractor(
+            new FieldTypeResolver(new OpenAPI(), diagnostics), diagnostics);
+
+        // when
+        extractor.extract(root);
+
+        // then
+        assertThat(captured).hasSize(1);
+        assertThat(captured.get(0))
+            .contains("(root)")
+            .contains("`firstname`")
+            .contains("only a presence check is emitted");
+    }
+
+    @Test
+    void test_supported_if_then_does_not_emit_warning() {
         // given — a supported single-property if/then; no warning expected
         Schema<?> ifSchema = new Schema<>();
         ifSchema.addProperty("paymentMethod", new Schema<>()._const("card"));

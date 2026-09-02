@@ -2,7 +2,7 @@
 
 Maven plugin that reads an OpenAPI 3.x document (JSON or YAML) and emits FEEL validation expressions for Camunda webhook connectors (Inbound and Intermediate). Drop the output into the connector's `activationCondition` or `responseExpression` field to keep request validation — required body fields and required query parameters — aligned with your API contract.
 
-Java 21. Three runtime dependencies: `swagger-parser`, `jackson-databind`, and `slf4j-simple` (test-only). No DI framework.
+Java 21. One runtime dependency, `swagger-parser` (which brings Jackson along). No DI framework, no mocking framework.
 
 > **Development transparency.** Claude (Anthropic's AI assistant) is used to support development on this project. Every change still follows standard engineering practices — TDD, clean code, small focused classes — and all code is reviewed for correctness, security, and architectural fit before it lands on `main`.
 
@@ -39,15 +39,15 @@ mvn com.consid.automation.camunda:feel-validation-generator:1.0.0:generate-feel 
 
 | Parameter | Property | Default | Notes |
 |---|---|---|---|
-| `openApiSpec` | `feelValidationGenerator.openApiSpec` | — | **Required.** Path to the OpenAPI 3.x document. |
-| `outputFile` | `feelValidationGenerator.outputFile` | — | **Required.** FEEL output destination; parent dirs are created. |
+| `openApiSpec` | `feelValidationGenerator.openApiSpec` | — | **Required.** Path to the OpenAPI 3.x document. Relative paths resolve against `${project.basedir}`. |
+| `outputFile` | `feelValidationGenerator.outputFile` | — | **Required.** FEEL output destination; parent dirs are created. Relative paths resolve against `${project.basedir}`. |
 | `addResponse` | `feelValidationGenerator.addResponse` | `false` | `true` emits a response expression, `false` an activation condition. |
 | `successStatusCode` | `feelValidationGenerator.successStatusCode` | `201` | HTTP status returned in response mode when validation passes. |
 | `failStatusCode` | `feelValidationGenerator.failStatusCode` | `400` | HTTP status returned in response mode when validation fails. |
 | `methods` | `feelValidationGenerator.methods` | `POST,PUT,PATCH` | Comma-separated HTTP methods to scan. Add `GET` for query-parameter-only webhooks. |
-| `mediaType` | `feelValidationGenerator.mediaType` | `application/json` | Request body media type to read schemas from. |
+| `mediaType` | `feelValidationGenerator.mediaType` | `application/json` | Request body media type to read schemas from. Matched ignoring parameters and case; `application/json` also accepts `application/*+json`. |
 
-Status codes must fall in 100–599 or the build fails fast.
+Status codes must fall in 100–599 or the build fails fast. Spec problems (unparseable document, unresolved `$ref`) fail the build with a plain message; parser validation messages such as a misspelled keyword are logged as warnings.
 
 ### Programmatic use
 
@@ -59,9 +59,29 @@ FEELValidationGenerator.builder()
     .generate();
 ```
 
-The Builder mirrors the Mojo parameters (`withResponse`, `withMediaType`, …) and adds `withWarningConsumer(Consumer<String>)` for [diagnostics](#diagnostics). Only `FEELValidationGenerator`, its `Builder`, and the Mojo are part of the public API — everything under `com.consid.automation.camunda.internal.*` may change between versions.
+The Builder mirrors the Mojo parameters (`withResponse`, `withMediaType`, …) and adds `withWarningConsumer(Consumer<String>)` for [diagnostics](#diagnostics). `generate()` throws the unchecked `FEELGenerationException` when the document cannot be parsed, a `$ref` cannot be resolved, or the output cannot be written; `build()` rejects invalid configuration with `IllegalArgumentException` / `NullPointerException`. Only `FEELValidationGenerator`, its `Builder`, `FEELGenerationException`, and the Mojo are part of the public API — everything under `com.consid.automation.camunda.internal.*` may change between versions.
 
 ## Output modes
+
+Both examples below are the generator's verbatim output for this operation:
+
+```yaml
+paths:
+  /customers:
+    post:
+      parameters:
+        - { name: tenant, in: query, required: true, schema: { type: string, enum: [acme, globex] } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customerId, email, age]
+              properties:
+                customerId: { type: string }
+                email:      { type: string, format: email }
+                age:        { type: integer, minimum: 18 }
+```
 
 ### Activation condition (`addResponse=false`)
 
@@ -72,15 +92,16 @@ Boolean FEEL for the connector's `activationCondition` field. Invalid payloads n
 {
   req: request.body,
   rules: [
+    {invalid: req.age=null or not(req.age instance of number) or req.age<18},
     {invalid: req.customerId=null or not(req.customerId instance of string)},
-    {invalid: req.email=null or not(req.email instance of string) or not(matches(req.email, "^[^@\s]+@[^@\s]+\.[^@\s]+$"))},
-    {invalid: req.age=null or not(req.age instance of number) or req.age<18}
+    {invalid: req.email=null or not(req.email instance of string) or not(matches(req.email, "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))},
+    {invalid: request.params.tenant=null or not(request.params.tenant instance of string) or not(request.params.tenant in ("acme", "globex"))}
   ],
   isValid: count(rules[invalid=true])=0
 }.isValid
 ```
 
-![activation condition example](activationCondition.png)
+![activation condition example](docs/images/activationCondition.png)
 
 ### Response expression (`addResponse=true`)
 
@@ -91,8 +112,10 @@ Context FEEL for the connector's `responseExpression` field. The webhook **alway
 {
   req: request.body,
   rules: [
+    { id: "age-invalid", field: "age", invalid: req.age=null or not(req.age instance of number) or req.age<18 },
     { id: "customerId-invalid", field: "customerId", invalid: req.customerId=null or not(req.customerId instance of string) },
-    { id: "age-invalid", field: "age", invalid: req.age=null or not(req.age instance of number) or req.age<18 }
+    { id: "email-invalid", field: "email", invalid: req.email=null or not(req.email instance of string) or not(matches(req.email, "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) },
+    { id: "params.tenant-invalid", field: "params.tenant", invalid: request.params.tenant=null or not(request.params.tenant instance of string) or not(request.params.tenant in ("acme", "globex")) }
   ],
   isValid: count(rules[invalid=true])=0,
   body: {
@@ -103,7 +126,9 @@ Context FEEL for the connector's `responseExpression` field. The webhook **alway
 }
 ```
 
-![response expression example](responseExpression.png)
+Rules are ordered body fields first (alphabetically), then query parameters. Regex patterns are emitted as FEEL string literals, so backslashes appear doubled.
+
+![response expression example](docs/images/responseExpression.png)
 
 ## What is supported
 
@@ -189,12 +214,12 @@ parameters:
 - Names that are not plain FEEL identifiers (`page-size`, `filter[status]`) or that collide with FEEL keywords (`in`, `and`, `null`, …) are read via `get value(request.params, "<name>")`, which the engine parses regardless of the name.
 - An operation-level parameter overrides a same-named path-level one. `$ref` parameters (`#/components/parameters/*`) are resolved. Header, cookie, and optional parameters are ignored.
 - In response mode the rule is identified as `params.<name>` (`id: "params.tenant-invalid", field: "params.tenant"`), so it cannot collide with a body field of the same name.
-- An operation without a request body still produces a block when it declares required query parameters. Rules are emitted body fields first, then query parameters sorted by name.
+- An operation without a request body still produces a block when it declares required query parameters; such a block omits the unused `req: request.body` alias. Rules are emitted body fields first, then query parameters sorted by name.
 
 ### Composition
 
 - **`$ref`** is resolved against `#/components/schemas/*`. An unresolved ref fails the build; the error names the endpoint.
-- **`allOf`** merges every branch's `required` list into the parent.
+- **`allOf`** merges every branch's `required` list into the parent. A `required` name declared next to the `allOf` is resolved from the branch that declares the property, so it keeps its type constraints.
 - **`oneOf` + `discriminator.mapping`** guards each branch's required fields by the discriminator value and pins the discriminator property to the mapping keys:
   ```yaml
   oneOf:
@@ -231,26 +256,29 @@ Nested-object required fields inherit a conditionally-required parent's triggers
 - `if`/`then` outside the single-property `const` / `enum` subset is skipped — no multi-property `if`, no nested logic, no `pattern` / range / length predicates, no `else`.
 - `if`/`then` dependents must be sibling property names. To scope a conditional to nested fields, place the `if`/`then` inside the nested object's schema.
 - Schema-form `additionalProperties` (a sub-schema, not a boolean) is not honored — only `additionalProperties: false`.
+- When a schema declares its own `properties`, swagger-parser discards `required` names that aren't among them before this plugin runs, so a typo in `required` next to a `properties` block cannot be detected here. A `required` name on a schema without its own `properties` is resolved through `allOf` branches; if it exists nowhere, a presence-only rule plus a warning is emitted.
 - Query parameters with a non-string schema are presence-checked only (values arrive as strings; see [Query parameters](#query-parameters)).
 - Not yet supported: `uniqueItems`, `minProperties` / `maxProperties`, `readOnly` / `writeOnly`, format-driven validations beyond `date` / `date-time` / `time` / `email` / `uuid` / `uri`, request inputs other than `request.body` and `request.params` (headers, cookies, path parameters).
 
 ### Diagnostics
 
-When the generator detects a supported-but-warned construct it emits a build warning instead of silently dropping the rule. Each message is prefixed `[<location>] …` (field path, `$ref`, or `(root)`). Warned constructs:
+The generator warns instead of silently dropping or weakening a rule. Each message is prefixed `[<location>] …` (field path, `$ref`, `(root)`, or the spec file name). Warned cases:
 
+- OpenAPI parser validation messages — a misspelled keyword such as `minLenght`, a missing `info` block, an unexpected attribute.
 - `if`/`then` outside the supported subset.
 - `oneOf` without `discriminator.mapping`.
 - Schema-form `additionalProperties`.
+- A `required` name that no schema (including `allOf` branches) declares.
 
 The Maven Mojo logs warnings via `getLog().warn(...)`. Programmatic callers consume them with `Builder.withWarningConsumer(Consumer<String>)`.
 
 ## Pinning BPMN to the generated FEEL
 
-For consumer projects that own both the OpenAPI spec and the BPMN process models, a self-contained helper test at [src/test/java/com/consid/automation/camunda/WebhookActivationConditionTest.java](src/test/java/com/consid/automation/camunda/WebhookActivationConditionTest.java) walks every `*.bpmn` under `src/test/resources/bpmn/`, reads each webhook event's `activationCondition`, and compares it against the matching block in `src/test/resources/feel/expected-activation.feel`. Copy the file into your consumer project, wire the plugin's `outputFile` to that fixture path, and any drift between BPMN and the generated FEEL fails the build. Only JUnit 5, AssertJ, and the JDK XML parser are required.
+For consumer projects that own both the OpenAPI spec and the BPMN process models, a self-contained template test at [docs/examples/WebhookActivationConditionTest.java](docs/examples/WebhookActivationConditionTest.java) walks every `*.bpmn` under `src/test/resources/bpmn/`, reads each webhook event's `activationCondition`, and compares it against the matching block in a checked-in generator output file. Copy it into your project, wire the plugin's `outputFile` to that fixture path, and any drift between BPMN and the generated FEEL fails your build. See [docs/examples/README.md](docs/examples/README.md).
 
 ## Build
 
 ```bash
-mvn verify              # tests + 80% line-coverage gate
+mvn verify              # tests, Javadoc doclint, coverage gate (90% line / 80% branch)
 mvn install             # install the plugin into the local repository
 ```

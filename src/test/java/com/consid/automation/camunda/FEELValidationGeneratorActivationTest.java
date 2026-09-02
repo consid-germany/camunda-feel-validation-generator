@@ -1,9 +1,5 @@
 package com.consid.automation.camunda;
 
-import com.consid.automation.camunda.internal.feel.*;
-import com.consid.automation.camunda.internal.model.*;
-import com.consid.automation.camunda.internal.openapi.*;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -11,6 +7,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class FEELValidationGeneratorActivationTest extends AbstractFEELValidationGeneratorIntegrationTest {
 
     @Test
-    public void test_unresolved_ref_does_include_endpoint_context_in_error_as_expected() {
+    public void test_unresolved_ref_does_include_endpoint_context_in_error() {
         // given — a spec with a $ref pointing at a missing component
         Path specFile = resolveResourcePath("openapi/broken-ref-api.json");
         Path outputFile = tempDir.resolve("broken.feel");
@@ -41,14 +38,47 @@ public class FEELValidationGeneratorActivationTest extends AbstractFEELValidatio
         // when / then — the error should carry both the bad $ref AND the endpoint heading
         // so the user can locate the problem in a multi-endpoint spec.
         assertThatThrownBy(generator::generate)
-            .isInstanceOf(IllegalStateException.class)
+            .isInstanceOf(FEELGenerationException.class)
             .hasMessageContaining("POST /customers/broken")
             .hasMessageContaining("#/components/schemas/DoesNotExist");
     }
 
+    @Test
+    public void test_parser_validation_messages_do_surface_as_warnings() {
+        // given — the parser tolerates a misspelled keyword and still returns a document
+        List<String> warnings = new ArrayList<>();
+        var generator = FEELValidationGenerator.builder()
+            .withOpenApiPath(resolveResourcePath("openapi/typo-api.json").toAbsolutePath())
+            .withOutputFilePath(tempDir.resolve("typo.feel").toAbsolutePath())
+            .withWarningConsumer(warnings::add)
+            .build();
+
+        // when
+        generator.generate();
+
+        // then — the author learns that `minLenght` was ignored instead of getting a silently weaker rule
+        assertThat(warnings)
+            .anySatisfy(warning -> assertThat(warning).contains("typo-api.json").contains("minLenght"));
+    }
+
+    @Test
+    public void test_unparseable_document_does_throw_generation_exception() {
+        // given
+        var generator = FEELValidationGenerator.builder()
+            .withOpenApiPath(resolveResourcePath("openapi/not-a-spec.txt").toAbsolutePath())
+            .withOutputFilePath(tempDir.resolve("never-written.feel").toAbsolutePath())
+            .build();
+
+        // when // then
+        assertThatThrownBy(generator::generate)
+            .isInstanceOf(FEELGenerationException.class)
+            .hasMessageContaining("Failed to parse OpenAPI specification")
+            .hasMessageContaining("not-a-spec.txt");
+    }
+
     @ParameterizedTest
     @MethodSource("com.consid.automation.camunda.AbstractFEELValidationGeneratorIntegrationTest#scenarios")
-    public void test_activation_does_evaluate_to_expected_verdict_as_expected(Scenario scenario) throws IOException {
+    public void test_activation_does_evaluate_to_expected_verdict(Scenario scenario) throws IOException {
         // given
         Path specFile = resolveResourcePath(scenario.openApiResource());
         Path outputFile = tempDir.resolve(scenario.id() + ".feel");

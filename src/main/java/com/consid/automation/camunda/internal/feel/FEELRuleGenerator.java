@@ -1,6 +1,12 @@
 package com.consid.automation.camunda.internal.feel;
 
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.model.Endpoint;
+import com.consid.automation.camunda.internal.model.FeelString;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.Trigger;
+import com.consid.automation.camunda.internal.model.ValidationRule;
+import com.consid.automation.camunda.internal.model.ValidationRule.InputSource;
 
 import java.util.List;
 import java.util.Map;
@@ -9,15 +15,20 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Centralizes all FEEL-specific rule building and rendering logic so that the rest
- * of the generator remains focused on OpenAPI traversal.
+ * Turns field descriptors into {@link ValidationRule}s and renders the grouped
+ * rules as the final FEEL text, either an activation condition (boolean) or a
+ * response expression (context with body and status code). Owns every piece of
+ * FEEL syntax outside the per-field violation expressions, which live in
+ * {@link FEELExpressionBuilder}.
  */
-public class FEELRuleGenerator implements ValidationRuleBuilder {
+public final class FEELRuleGenerator {
+
+    /** Bound only when at least one rule reads the body; query-only endpoints leave it out. */
+    private static final String BODY_ALIAS = "  req: request.body,\n";
 
     private static final String ACTIVATION_TEMPLATE = """
             {
-              req: request.body,
-              rules: [
+            %s  rules: [
             %s
               ],
               isValid: count(rules[invalid=true])=0
@@ -25,8 +36,7 @@ public class FEELRuleGenerator implements ValidationRuleBuilder {
 
     private static final String RESPONSE_TEMPLATE = """
             {
-              req: request.body,
-              rules: [
+            %s  rules: [
             %s
               ],
               isValid: count(rules[invalid=true])=0,
@@ -37,6 +47,8 @@ public class FEELRuleGenerator implements ValidationRuleBuilder {
               }, statusCode: if isValid then %d else %d
             }""";
 
+    /** Body fields are read through the alias the template binds to {@code request.body}. */
+    private static final String BODY_ROOT = "req";
     /** Query parameters are read from the connector's {@code request.params} context. */
     private static final String PARAMS_ROOT = "request.params";
     private static final String PARAMS_FIELD_PREFIX = "params.";
@@ -51,40 +63,42 @@ public class FEELRuleGenerator implements ValidationRuleBuilder {
         "and", "or", "in", "then", "else", "function", "true", "false", "null", "satisfies", "return");
 
     private final boolean addResponse;
-    private final FEELExpressionBuilder expressionBuilder;
     private final int successStatusCode;
     private final int failureStatusCode;
-
-    public FEELRuleGenerator(boolean addResponse) {
-        this(addResponse, 201, 400);
-    }
+    private final FEELExpressionBuilder expressionBuilder = new FEELExpressionBuilder();
 
     public FEELRuleGenerator(boolean addResponse, int successStatusCode, int failureStatusCode) {
-        this(addResponse, successStatusCode, failureStatusCode, new FEELExpressionBuilder());
-    }
-
-    public FEELRuleGenerator(boolean addResponse,
-                      int successStatusCode,
-                      int failureStatusCode,
-                      FEELExpressionBuilder expressionBuilder) {
         this.addResponse = addResponse;
         this.successStatusCode = successStatusCode;
         this.failureStatusCode = failureStatusCode;
-        this.expressionBuilder = expressionBuilder;
     }
 
-    @Override
+    /** Rule for a required request-body field addressed by its dotted path. */
     public ValidationRule createRule(String fieldPath, FieldDescriptor descriptor) {
-        String ruleId = fieldPath + "-invalid";
-        String condition = expressionBuilder.build("req." + fieldPath, qualifyDependsOn(descriptor));
-        return ValidationRule.create(ruleId, condition, fieldPath);
+        String condition = expressionBuilder.build(BODY_ROOT + "." + fieldPath, qualifyDependsOn(descriptor));
+        return new ValidationRule(fieldPath + "-invalid", condition, fieldPath, InputSource.BODY);
     }
 
-    @Override
+    /**
+     * Rule enforcing the root payload's {@code additionalProperties: false}
+     * closure. Separate from the per-field rules because the root has no parent
+     * property to attach to.
+     */
+    public ValidationRule createRootObjectRule(ObjectTypeInfo rootClosure) {
+        String condition = expressionBuilder.build(BODY_ROOT, FieldDescriptor.of(rootClosure));
+        return new ValidationRule("rootObject-invalid", condition, "(root)", InputSource.BODY);
+    }
+
+    /**
+     * Rule for a query parameter marked {@code required: true}. Query parameters
+     * live under {@code request.params}, not the request body, and are
+     * identified as {@code params.<name>} so they cannot collide with a body
+     * field of the same name.
+     */
     public ValidationRule createQueryParameterRule(String parameterName, FieldDescriptor descriptor) {
         String condition = expressionBuilder.build(queryParameterAccessor(parameterName), descriptor);
         String fieldPath = PARAMS_FIELD_PREFIX + parameterName;
-        return ValidationRule.create(fieldPath + "-invalid", condition, fieldPath);
+        return new ValidationRule(fieldPath + "-invalid", condition, fieldPath, InputSource.QUERY);
     }
 
     /**
@@ -97,14 +111,7 @@ public class FEELRuleGenerator implements ValidationRuleBuilder {
         if (SIMPLE_FEEL_NAME.matcher(parameterName).matches() && !FEEL_KEYWORDS.contains(parameterName)) {
             return PARAMS_ROOT + "." + parameterName;
         }
-        return "get value(" + PARAMS_ROOT + ", \"" + FEELExpressionBuilder.escapeLiteral(parameterName) + "\")";
-    }
-
-    @Override
-    public ValidationRule createRootObjectRule(ObjectTypeInfo rootClosure) {
-        FieldDescriptor descriptor = FieldDescriptor.of(rootClosure);
-        String condition = expressionBuilder.build("req", descriptor);
-        return ValidationRule.create("rootObject-invalid", condition, "(root)");
+        return "get value(" + PARAMS_ROOT + ", " + new FeelString(parameterName).render() + ")";
     }
 
     private FieldDescriptor qualifyDependsOn(FieldDescriptor descriptor) {
@@ -112,32 +119,38 @@ public class FEELRuleGenerator implements ValidationRuleBuilder {
             return descriptor;
         }
         List<Trigger> qualified = descriptor.dependsOn().stream()
-            .map(t -> t.withPrefix("req."))
+            .map(trigger -> trigger.withPrefix(BODY_ROOT + "."))
             .toList();
         return descriptor.withDependsOn(qualified);
     }
 
-    @Override
-    public String render(Map<String, List<ValidationRule>> rulesByEndpoint) {
+    /** One FEEL block per endpoint, each introduced by a {@code # METHOD /path} heading. */
+    public String render(Map<Endpoint, List<ValidationRule>> rulesByEndpoint) {
         return rulesByEndpoint.entrySet().stream()
-            .map(entry -> entry.getKey() + "\n" + buildRulesBlock(entry.getValue()))
+            .map(entry -> heading(entry.getKey()) + "\n" + buildRulesBlock(entry.getValue()))
             .collect(Collectors.joining("\n\n"));
+    }
+
+    private static String heading(Endpoint endpoint) {
+        return "# " + endpoint.method() + " " + endpoint.path();
     }
 
     private String buildRulesBlock(List<ValidationRule> rules) {
         String renderedRules = rules.stream()
             .map(rule -> "    " + formatRuleLine(rule))
             .collect(Collectors.joining(",\n"));
+        boolean readsBody = rules.stream().anyMatch(rule -> rule.source() == InputSource.BODY);
+        String bodyAlias = readsBody ? BODY_ALIAS : "";
         return addResponse
-            ? RESPONSE_TEMPLATE.formatted(renderedRules, successStatusCode, failureStatusCode)
-            : ACTIVATION_TEMPLATE.formatted(renderedRules);
+            ? RESPONSE_TEMPLATE.formatted(bodyAlias, renderedRules, successStatusCode, failureStatusCode)
+            : ACTIVATION_TEMPLATE.formatted(bodyAlias, renderedRules);
     }
 
     private String formatRuleLine(ValidationRule rule) {
         if (addResponse) {
-            return "{ id: \"" + rule.id()
-                + "\", field: \"" + rule.fieldPath()
-                + "\", invalid: " + rule.invalidExpression() + " }";
+            return "{ id: " + new FeelString(rule.id()).render()
+                + ", field: " + new FeelString(rule.fieldPath()).render()
+                + ", invalid: " + rule.invalidExpression() + " }";
         }
         return "{invalid: " + rule.invalidExpression() + "}";
     }

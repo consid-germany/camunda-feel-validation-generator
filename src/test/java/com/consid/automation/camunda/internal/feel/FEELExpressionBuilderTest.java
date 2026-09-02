@@ -1,6 +1,16 @@
 package com.consid.automation.camunda.internal.feel;
 
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.model.ArrayTypeInfo;
+import com.consid.automation.camunda.internal.model.BooleanTypeInfo;
+import com.consid.automation.camunda.internal.model.FeelBoolean;
+import com.consid.automation.camunda.internal.model.FeelNumber;
+import com.consid.automation.camunda.internal.model.FeelString;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.NumberTypeInfo;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.StringTypeInfo;
+import com.consid.automation.camunda.internal.model.Trigger;
+import com.consid.automation.camunda.internal.model.UnknownTypeInfo;
 
 import org.junit.jupiter.api.Test;
 
@@ -24,14 +34,25 @@ class FEELExpressionBuilderTest {
         return new NumberTypeInfo(min, exMin, max, exMax, multipleOf);
     }
 
+    private static final NumberTypeInfo ANY_NUMBER = number(null, null, null, null, null);
+    private static final ArrayTypeInfo ANY_ARRAY = array(null, null);
+
+    private static ArrayTypeInfo array(Integer minItems, Integer maxItems) {
+        return new ArrayTypeInfo(minItems, maxItems, null, Map.of());
+    }
+
+    private static StringTypeInfo stringOf(StringTypeInfo.StringFormat format) {
+        return new StringTypeInfo(format, null, null, null);
+    }
+
     @Test
-    void test_string_expression_without_constraints_does_only_check_type_as_expected() {
+    void test_string_expression_without_constraints_does_only_check_type() {
         String result = builder.build("username", FieldDescriptor.of(StringTypeInfo.PLAIN));
         assertThat(result).isEqualTo("username=null or not(username instance of string)");
     }
 
     @Test
-    void test_string_expression_with_min_length_does_emit_length_lower_bound_as_expected() {
+    void test_string_expression_with_min_length_does_emit_length_lower_bound() {
         FieldDescriptor descriptor = FieldDescriptor.of(string(3, null, null));
         String result = builder.build("username", descriptor);
         assertThat(result).isEqualTo(
@@ -39,7 +60,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_string_expression_with_max_length_does_emit_length_upper_bound_as_expected() {
+    void test_string_expression_with_max_length_does_emit_length_upper_bound() {
         FieldDescriptor descriptor = FieldDescriptor.of(string(null, 10, null));
         String result = builder.build("username", descriptor);
         assertThat(result).isEqualTo(
@@ -47,7 +68,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_string_expression_with_min_length_zero_does_omit_lower_bound_as_expected() {
+    void test_string_expression_with_min_length_zero_does_omit_lower_bound() {
         // Explicit "may be empty" should not emit a redundant length < 0 check.
         FieldDescriptor descriptor = FieldDescriptor.of(string(0, null, null));
         String result = builder.build("note", descriptor);
@@ -55,7 +76,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_string_expression_with_pattern_does_emit_matches_check_as_expected() {
+    void test_string_expression_with_pattern_does_emit_matches_check() {
         FieldDescriptor descriptor = FieldDescriptor.of(string(null, null, "^[A-Z]{3}$"));
         String result = builder.build("code", descriptor);
         assertThat(result).isEqualTo(
@@ -63,7 +84,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_string_expression_with_pattern_containing_backslash_does_escape_as_expected() {
+    void test_string_expression_with_pattern_containing_backslash_does_escape() {
         FieldDescriptor descriptor = FieldDescriptor.of(string(null, null, "^\\d{5}$"));
         String result = builder.build("zip", descriptor);
         assertThat(result).isEqualTo(
@@ -71,7 +92,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_string_expression_with_combined_constraints_does_chain_all_checks_as_expected() {
+    void test_string_expression_with_combined_constraints_does_chain_all_checks() {
         FieldDescriptor descriptor = FieldDescriptor.of(string(2, 8, "^[a-z]+$"));
         String result = builder.build("handle", descriptor);
         assertThat(result).isEqualTo(
@@ -82,7 +103,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_nullable_string_with_min_length_does_only_check_when_present_as_expected() {
+    void test_nullable_string_with_min_length_does_only_check_when_present() {
         FieldDescriptor descriptor = new FieldDescriptor(string(1, null, null), true, List.of(), List.of());
         String result = builder.build("nickname", descriptor);
         assertThat(result).isEqualTo(
@@ -90,27 +111,27 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_expression_does_build_as_expected() {
-        String result = builder.build("age", FieldDescriptor.of(NumberTypeInfo.NONE));
+    void test_number_expression_does_build() {
+        String result = builder.build("age", FieldDescriptor.of(ANY_NUMBER));
         assertThat(result).isEqualTo("age=null or not(age instance of number)");
     }
 
     @Test
-    void test_number_expression_with_minimum_does_emit_inclusive_lower_bound_as_expected() {
+    void test_number_expression_with_minimum_does_emit_inclusive_lower_bound() {
         FieldDescriptor descriptor = FieldDescriptor.of(number(new BigDecimal("18"), null, null, null, null));
         String result = builder.build("age", descriptor);
         assertThat(result).isEqualTo("age=null or not(age instance of number) or age<18");
     }
 
     @Test
-    void test_number_expression_with_maximum_does_emit_inclusive_upper_bound_as_expected() {
+    void test_number_expression_with_maximum_does_emit_inclusive_upper_bound() {
         FieldDescriptor descriptor = FieldDescriptor.of(number(null, null, new BigDecimal("120"), null, null));
         String result = builder.build("age", descriptor);
         assertThat(result).isEqualTo("age=null or not(age instance of number) or age>120");
     }
 
     @Test
-    void test_number_expression_with_exclusive_minimum_does_emit_le_bound_as_expected() {
+    void test_number_expression_with_exclusive_minimum_does_emit_le_bound() {
         // violation when x is at or below the exclusive lower
         FieldDescriptor descriptor = FieldDescriptor.of(number(null, new BigDecimal("0"), null, null, null));
         String result = builder.build("discount", descriptor);
@@ -118,14 +139,14 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_expression_with_exclusive_maximum_does_emit_ge_bound_as_expected() {
+    void test_number_expression_with_exclusive_maximum_does_emit_ge_bound() {
         FieldDescriptor descriptor = FieldDescriptor.of(number(null, null, null, new BigDecimal("1"), null));
         String result = builder.build("discount", descriptor);
         assertThat(result).isEqualTo("discount=null or not(discount instance of number) or discount>=1");
     }
 
     @Test
-    void test_number_expression_with_multiple_of_does_emit_modulo_check_as_expected() {
+    void test_number_expression_with_multiple_of_does_emit_modulo_check() {
         FieldDescriptor descriptor = FieldDescriptor.of(number(null, null, null, null, new BigDecimal("100")));
         String result = builder.build("points", descriptor);
         assertThat(result).isEqualTo(
@@ -133,7 +154,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_expression_with_combined_bounds_does_chain_min_max_then_multiple_as_expected() {
+    void test_number_expression_with_combined_bounds_does_chain_min_max_then_multiple() {
         FieldDescriptor descriptor = FieldDescriptor.of(
             number(new BigDecimal("0"), null, new BigDecimal("1000"), null, new BigDecimal("50")));
         String result = builder.build("amount", descriptor);
@@ -145,7 +166,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_expression_with_negative_bound_does_render_unary_minus_as_expected() {
+    void test_number_expression_with_negative_bound_does_render_unary_minus() {
         // FEEL parses `x<-100` as `x < (-100)`; unary minus binds tighter than comparison.
         FieldDescriptor descriptor = FieldDescriptor.of(number(new BigDecimal("-100"), null, null, null, null));
         String result = builder.build("delta", descriptor);
@@ -153,7 +174,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_expression_with_big_decimal_in_scientific_notation_does_render_plain_as_expected() {
+    void test_number_expression_with_big_decimal_in_scientific_notation_does_render_plain() {
         // BigDecimal.toString() emits "1E+2"; the builder must use toPlainString so FEEL parses it.
         FieldDescriptor descriptor = FieldDescriptor.of(number(null, null, new BigDecimal("1E2"), null, null));
         String result = builder.build("value", descriptor);
@@ -161,7 +182,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_nullable_number_with_minimum_does_only_check_when_present_as_expected() {
+    void test_nullable_number_with_minimum_does_only_check_when_present() {
         FieldDescriptor descriptor = new FieldDescriptor(
             number(new BigDecimal("0"), null, null, null, null), true, List.of(), List.of());
         String result = builder.build("balance", descriptor);
@@ -169,50 +190,50 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_boolean_expression_does_build_as_expected() {
+    void test_boolean_expression_does_build() {
         String result = builder.build("isActive", FieldDescriptor.of(BooleanTypeInfo.INSTANCE));
         assertThat(result).isEqualTo("isActive=null or not(isActive instance of boolean)");
     }
 
     @Test
-    void test_array_expression_without_constraints_does_only_check_type_as_expected() {
+    void test_array_expression_without_constraints_does_only_check_type() {
         // Required array with no minItems may be empty per JSON Schema; the type check is enough.
-        String result = builder.build("tags", FieldDescriptor.of(ArrayTypeInfo.NONE));
+        String result = builder.build("tags", FieldDescriptor.of(ANY_ARRAY));
         assertThat(result).isEqualTo("tags=null or not(tags instance of list)");
     }
 
     @Test
-    void test_array_expression_with_min_items_does_emit_count_lower_bound_as_expected() {
-        FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(2, null));
+    void test_array_expression_with_min_items_does_emit_count_lower_bound() {
+        FieldDescriptor descriptor = FieldDescriptor.of(array(2, null));
         String result = builder.build("tags", descriptor);
         assertThat(result).isEqualTo("tags=null or not(tags instance of list) or count(tags)<2");
     }
 
     @Test
-    void test_array_expression_with_max_items_does_emit_count_upper_bound_as_expected() {
-        FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(null, 5));
+    void test_array_expression_with_max_items_does_emit_count_upper_bound() {
+        FieldDescriptor descriptor = FieldDescriptor.of(array(null, 5));
         String result = builder.build("tags", descriptor);
         assertThat(result).isEqualTo("tags=null or not(tags instance of list) or count(tags)>5");
     }
 
     @Test
-    void test_array_expression_with_min_and_max_items_does_emit_both_bounds_as_expected() {
-        FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(1, 3));
+    void test_array_expression_with_min_and_max_items_does_emit_both_bounds() {
+        FieldDescriptor descriptor = FieldDescriptor.of(array(1, 3));
         String result = builder.build("tags", descriptor);
         assertThat(result).isEqualTo(
             "tags=null or not(tags instance of list) or count(tags)<1 or count(tags)>3");
     }
 
     @Test
-    void test_array_expression_with_min_items_zero_does_omit_lower_bound_as_expected() {
+    void test_array_expression_with_min_items_zero_does_omit_lower_bound() {
         // Explicit "may be empty" should not emit a redundant count(x) < 0 check.
-        FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(0, null));
+        FieldDescriptor descriptor = FieldDescriptor.of(array(0, null));
         String result = builder.build("tags", descriptor);
         assertThat(result).isEqualTo("tags=null or not(tags instance of list)");
     }
 
     @Test
-    void test_array_expression_with_items_does_emit_some_satisfies_clause_as_expected() {
+    void test_array_expression_with_items_does_emit_some_satisfies_clause() {
         // Array of strings: violation when any element isn't a string.
         FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(
             null, null, FieldDescriptor.of(StringTypeInfo.PLAIN), Map.of()));
@@ -223,7 +244,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_array_expression_with_typed_items_constraints_does_propagate_inner_checks_as_expected() {
+    void test_array_expression_with_typed_items_constraints_does_propagate_inner_checks() {
         // Array of strings with a minLength constraint on each element.
         FieldDescriptor items = FieldDescriptor.of(string(2, null, null));
         FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(null, null, items, Map.of()));
@@ -233,7 +254,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_array_expression_with_object_items_required_children_does_emit_per_field_checks_as_expected() {
+    void test_array_expression_with_object_items_required_children_does_emit_per_field_checks() {
         // Array of objects {id, name} both required.
         FieldDescriptor items = FieldDescriptor.of(ObjectTypeInfo.OPEN);
         Map<String, FieldDescriptor> itemRequired = new LinkedHashMap<>();
@@ -250,7 +271,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_array_expression_with_items_and_min_items_does_combine_bounds_and_element_check_as_expected() {
+    void test_array_expression_with_items_and_min_items_does_combine_bounds_and_element_check() {
         // Array of strings, must be non-empty, each element must be a string.
         FieldDescriptor items = FieldDescriptor.of(StringTypeInfo.PLAIN);
         FieldDescriptor descriptor = FieldDescriptor.of(new ArrayTypeInfo(1, null, items, Map.of()));
@@ -262,21 +283,21 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_nullable_array_with_min_items_does_only_check_when_present_as_expected() {
+    void test_nullable_array_with_min_items_does_only_check_when_present() {
         FieldDescriptor descriptor = new FieldDescriptor(
-            new ArrayTypeInfo(1, null), true, List.of(), List.of());
+            array(1, null), true, List.of(), List.of());
         String result = builder.build("tags", descriptor);
         assertThat(result).isEqualTo("tags!=null and (not(tags instance of list) or count(tags)<1)");
     }
 
     @Test
-    void test_object_expression_does_build_as_expected() {
+    void test_object_expression_does_build() {
         String result = builder.build("metadata", FieldDescriptor.of(ObjectTypeInfo.OPEN));
         assertThat(result).isEqualTo("metadata=null or not(metadata instance of context)");
     }
 
     @Test
-    void test_object_expression_with_additional_properties_false_does_emit_keys_check_as_expected() {
+    void test_object_expression_with_additional_properties_false_does_emit_keys_check() {
         FieldDescriptor descriptor = FieldDescriptor.of(new ObjectTypeInfo(Set.of("id", "name")));
         String result = builder.build("profile", descriptor);
         // Wrapped in outer parens (same defensive reason as `some`: `every` is greedy).
@@ -286,34 +307,34 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_date_expression_does_build_as_expected() {
+    void test_date_expression_does_build() {
         String result = builder.build("birthDate",
-            FieldDescriptor.of(StringTypeInfo.of(StringTypeInfo.StringFormat.DATE)));
+            FieldDescriptor.of(stringOf(StringTypeInfo.StringFormat.DATE)));
         assertThat(result).isEqualTo("birthDate=null or date(birthDate)=null");
     }
 
     @Test
-    void test_date_time_expression_does_build_as_expected() {
+    void test_date_time_expression_does_build() {
         String result = builder.build("createdAt",
-            FieldDescriptor.of(StringTypeInfo.of(StringTypeInfo.StringFormat.DATE_TIME)));
+            FieldDescriptor.of(stringOf(StringTypeInfo.StringFormat.DATE_TIME)));
         assertThat(result).isEqualTo("createdAt=null or date and time(createdAt)=null");
     }
 
     @Test
-    void test_time_expression_does_build_as_expected() {
+    void test_time_expression_does_build() {
         String result = builder.build("startTime",
-            FieldDescriptor.of(StringTypeInfo.of(StringTypeInfo.StringFormat.TIME)));
+            FieldDescriptor.of(stringOf(StringTypeInfo.StringFormat.TIME)));
         assertThat(result).isEqualTo("startTime=null or time(startTime)=null");
     }
 
     @Test
-    void test_unknown_expression_does_only_check_null_as_expected() {
+    void test_unknown_expression_does_only_check_null() {
         String result = builder.build("unknown", FieldDescriptor.of(UnknownTypeInfo.INSTANCE));
         assertThat(result).isEqualTo("unknown=null");
     }
 
     @Test
-    void test_string_enum_does_append_in_check_after_type_check_as_expected() {
+    void test_string_enum_does_append_in_check_after_type_check() {
         FieldDescriptor descriptor = new FieldDescriptor(StringTypeInfo.PLAIN, false,
             List.of(new FeelString("red"), new FeelString("green"), new FeelString("blue")),
             List.of());
@@ -324,8 +345,8 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_number_enum_does_render_numeric_literals_unquoted_as_expected() {
-        FieldDescriptor descriptor = new FieldDescriptor(NumberTypeInfo.NONE, false,
+    void test_number_enum_does_render_numeric_literals_unquoted() {
+        FieldDescriptor descriptor = new FieldDescriptor(ANY_NUMBER, false,
             List.of(new FeelNumber(new BigDecimal("1")),
                     new FeelNumber(new BigDecimal("2")),
                     new FeelNumber(new BigDecimal("3"))),
@@ -335,7 +356,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_enum_string_with_quotes_does_escape_as_expected() {
+    void test_enum_string_with_quotes_does_escape() {
         FieldDescriptor descriptor = new FieldDescriptor(StringTypeInfo.PLAIN, false,
             List.of(new FeelString("say \"hi\"")), List.of());
         String result = builder.build("greeting", descriptor);
@@ -343,14 +364,14 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_nullable_string_does_check_only_when_present_as_expected() {
+    void test_nullable_string_does_check_only_when_present() {
         FieldDescriptor descriptor = new FieldDescriptor(StringTypeInfo.PLAIN, true, List.of(), List.of());
         String result = builder.build("nickname", descriptor);
         assertThat(result).isEqualTo("nickname!=null and (not(nickname instance of string))");
     }
 
     @Test
-    void test_nullable_enum_does_combine_present_and_in_checks_as_expected() {
+    void test_nullable_enum_does_combine_present_and_in_checks() {
         FieldDescriptor descriptor = new FieldDescriptor(StringTypeInfo.PLAIN, true,
             List.of(new FeelString("a"), new FeelString("b")), List.of());
         String result = builder.build("status", descriptor);
@@ -360,7 +381,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_does_wrap_body_with_trigger_check_as_expected() {
+    void test_conditional_required_does_wrap_body_with_trigger_check() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.presence("req.shippingAddress")));
@@ -371,7 +392,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_with_multiple_triggers_does_or_them_as_expected() {
+    void test_conditional_required_with_multiple_triggers_does_or_them() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.presence("req.a"), Trigger.presence("req.b")));
@@ -380,7 +401,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_with_value_trigger_does_compare_to_literal_as_expected() {
+    void test_conditional_required_with_value_trigger_does_compare_to_literal() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.value("req.paymentMethod", List.of(new FeelString("card")))));
@@ -391,7 +412,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_with_boolean_true_trigger_does_render_as_bare_path_as_expected() {
+    void test_conditional_required_with_boolean_true_trigger_does_render_as_bare_path() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.value("req.flagged", List.of(new FeelBoolean(true)))));
@@ -401,7 +422,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_with_boolean_false_trigger_does_render_as_not_path_as_expected() {
+    void test_conditional_required_with_boolean_false_trigger_does_render_as_not_path() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.value("req.flagged", List.of(new FeelBoolean(false)))));
@@ -410,7 +431,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_conditional_required_with_enum_value_trigger_does_use_in_check_as_expected() {
+    void test_conditional_required_with_enum_value_trigger_does_use_in_check() {
         FieldDescriptor descriptor = new FieldDescriptor(
             StringTypeInfo.PLAIN, false, List.of(),
             List.of(Trigger.value("req.tier", List.of(new FeelString("gold"), new FeelString("platinum")))));
@@ -419,7 +440,7 @@ class FEELExpressionBuilderTest {
     }
 
     @Test
-    void test_nullable_unknown_does_never_fail_as_expected() {
+    void test_nullable_unknown_does_never_fail() {
         FieldDescriptor descriptor = new FieldDescriptor(UnknownTypeInfo.INSTANCE, true, List.of(), List.of());
         String result = builder.build("anything", descriptor);
         assertThat(result).isEqualTo("false");

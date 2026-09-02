@@ -1,6 +1,19 @@
 package com.consid.automation.camunda.internal.feel;
 
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.model.ArrayTypeInfo;
+import com.consid.automation.camunda.internal.model.BooleanTypeInfo;
+import com.consid.automation.camunda.internal.model.FeelBoolean;
+import com.consid.automation.camunda.internal.model.FeelLiteral;
+import com.consid.automation.camunda.internal.model.FeelString;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.NumberTypeInfo;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.PresenceTrigger;
+import com.consid.automation.camunda.internal.model.StringTypeInfo;
+import com.consid.automation.camunda.internal.model.Trigger;
+import com.consid.automation.camunda.internal.model.TypeInfo;
+import com.consid.automation.camunda.internal.model.UnknownTypeInfo;
+import com.consid.automation.camunda.internal.model.ValueTrigger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +66,7 @@ public class FEELExpressionBuilder {
         return switch (typeInfo) {
             case StringTypeInfo s -> stringViolations(fieldName, s);
             case NumberTypeInfo n -> numberViolations(fieldName, n);
-            case BooleanTypeInfo b -> singletonOrEmpty("not(" + fieldName + " instance of boolean)");
+            case BooleanTypeInfo b -> new ArrayList<>(List.of("not(" + fieldName + " instance of boolean)"));
             case ArrayTypeInfo a -> arrayViolations(fieldName, a);
             case ObjectTypeInfo o -> objectViolations(fieldName, o);
             case UnknownTypeInfo u -> List.of();
@@ -70,7 +83,7 @@ public class FEELExpressionBuilder {
             parts.add("string length(" + fieldName + ")>" + info.maxLength());
         }
         if (info.hasPattern()) {
-            parts.add("not(matches(" + fieldName + ", \"" + escapeLiteral(info.pattern()) + "\"))");
+            parts.add("not(matches(" + fieldName + ", " + new FeelString(info.pattern()).render() + "))");
         }
         return parts;
     }
@@ -145,7 +158,7 @@ public class FEELExpressionBuilder {
         if (info.isClosed()) {
             String list = info.allowedKeys().stream()
                 .sorted()
-                .map(k -> "\"" + escapeLiteral(k) + "\"")
+                .map(k -> new FeelString(k).render())
                 .collect(Collectors.joining(", "));
             // `get entries(ctx).key` projects out the list of keys (Camunda FEEL has
             // no direct `get keys(...)` function). Outer parens defend against the
@@ -193,14 +206,4 @@ public class FEELExpressionBuilder {
         return value.toPlainString();
     }
 
-    /** Escapes a Java string for embedding in a double-quoted FEEL string literal. */
-    static String escapeLiteral(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static List<String> singletonOrEmpty(String value) {
-        List<String> parts = new ArrayList<>();
-        parts.add(value);
-        return parts;
-    }
 }

@@ -1,7 +1,15 @@
 package com.consid.automation.camunda.internal.openapi;
 
 import com.consid.automation.camunda.internal.Diagnostics;
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.model.ArrayTypeInfo;
+import com.consid.automation.camunda.internal.model.BooleanTypeInfo;
+import com.consid.automation.camunda.internal.model.FeelLiteral;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.NumberTypeInfo;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.StringTypeInfo;
+import com.consid.automation.camunda.internal.model.TypeInfo;
+import com.consid.automation.camunda.internal.model.UnknownTypeInfo;
 
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -12,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -37,13 +46,9 @@ public class FieldTypeResolver {
     private final OpenAPI openAPI;
     private final Diagnostics diagnostics;
 
-    public FieldTypeResolver(OpenAPI openAPI) {
-        this(openAPI, Diagnostics.NOOP);
-    }
-
     public FieldTypeResolver(OpenAPI openAPI, Diagnostics diagnostics) {
-        this.openAPI = openAPI;
-        this.diagnostics = diagnostics;
+        this.openAPI = Objects.requireNonNull(openAPI, "openAPI");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
     }
 
     /**

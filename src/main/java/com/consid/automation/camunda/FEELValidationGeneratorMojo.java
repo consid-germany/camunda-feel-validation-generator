@@ -1,5 +1,6 @@
 package com.consid.automation.camunda;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -7,103 +8,105 @@ import java.util.List;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
 /**
- * Mojo for generating FEEL validation rules from OpenAPI specifications.
- * 
- * This plugin reads an OpenAPI specification file and generates a validation
- * output text file containing FEEL validation rules.
+ * Generates FEEL validation rules from an OpenAPI specification. Thin adapter
+ * over {@link FEELValidationGenerator}: validates the input file exists, maps
+ * the {@code @Parameter} set onto the Builder, and translates failures into
+ * Maven's exception vocabulary.
  */
-@Mojo(name = "generate-feel", defaultPhase = org.apache.maven.plugins.annotations.LifecyclePhase.GENERATE_SOURCES)
+@Mojo(name = "generate-feel", defaultPhase = LifecyclePhase.GENERATE_SOURCES)
 public class FEELValidationGeneratorMojo extends AbstractMojo {
 
     /**
-     * The path to the OpenAPI specification file to be processed.
+     * The OpenAPI specification file to process. Relative paths resolve against
+     * the project base directory.
      */
     @Parameter(property = "feelValidationGenerator.openApiSpec", required = true)
-    private String openApiSpec;
+    private File openApiSpec;
 
     /**
-     * The path where the generated validation output file will be written.
+     * Where the generated FEEL output is written. Parent directories are created.
+     * Relative paths resolve against the project base directory.
      */
     @Parameter(property = "feelValidationGenerator.outputFile", required = true)
-    private String outputFile;
+    private File outputFile;
 
     /**
-     * Flag to include a response body/status block in the generated FEEL output.
+     * {@code true} emits a response expression (context with body and status
+     * code), {@code false} an activation condition (boolean).
      */
     @Parameter(property = "feelValidationGenerator.addResponse", defaultValue = "false")
     private boolean addResponse;
 
     /**
-     * HTTP status code to use when the response expression evaluates to success.
+     * HTTP status code returned in response mode when validation passes.
      */
     @Parameter(property = "feelValidationGenerator.successStatusCode", defaultValue = "201")
     private int successStatusCode;
 
     /**
-     * HTTP status code to use when the response expression evaluates to failure.
+     * HTTP status code returned in response mode when validation fails.
      */
     @Parameter(property = "feelValidationGenerator.failStatusCode", defaultValue = "400")
     private int failStatusCode;
 
     /**
-     * Comma-separated HTTP methods (e.g. POST,PUT,PATCH) to scan for request bodies.
+     * Comma-separated HTTP methods (e.g. {@code POST,PUT,PATCH}) whose operations
+     * are scanned for request bodies and required query parameters.
      */
     @Parameter(property = "feelValidationGenerator.methods", defaultValue = "POST,PUT,PATCH")
     private String methods;
 
     /**
-     * Request body media type to read schemas from. Operations declaring multiple
-     * content types only contribute the schema matching this media type.
+     * Request body media type to read schemas from. Matched ignoring parameters
+     * and case; {@code application/json} also accepts {@code application/*+json}.
      */
     @Parameter(property = "feelValidationGenerator.mediaType", defaultValue = "application/json")
     private String mediaType;
 
-    /**
-     * Executes the FEEL validation generation logic.
-     *
-     * @throws MojoExecutionException if an unexpected error occurs
-     * @throws MojoFailureException if the plugin execution fails
-     */
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
+        getLog().info("Starting FEEL Validation Generator");
+        getLog().info("Input OpenAPI spec: " + openApiSpec);
+        getLog().info("Output file: " + outputFile);
+
+        Path specPath = openApiSpec.toPath();
+        if (!Files.exists(specPath)) {
+            throw new MojoFailureException("OpenAPI specification file not found: " + openApiSpec);
+        }
+
         try {
-            getLog().info("Starting FEEL Validation Generator");
-            getLog().info("Input OpenAPI spec: " + openApiSpec);
-            getLog().info("Output file: " + outputFile);
-
-            Path specPath = Path.of(openApiSpec);
-            if (!Files.exists(specPath)) {
-                throw new MojoFailureException("OpenAPI specification file not found: " + openApiSpec);
-            }
-
-            List<String> methodList = Arrays.stream(methods.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .map(String::toUpperCase)
-                    .toList();
-
-            FEELValidationGenerator generator = FEELValidationGenerator.builder()
+            FEELValidationGenerator.builder()
                 .withOpenApiPath(specPath)
-                .withOutputFilePath(Path.of(outputFile))
+                .withOutputFilePath(outputFile.toPath())
                 .withResponse(addResponse)
                 .withSuccessStatusCode(successStatusCode)
                 .withFailStatusCode(failStatusCode)
-                .withHttpMethods(methodList)
+                .withHttpMethods(parseMethods(methods))
                 .withMediaType(mediaType)
                 .withWarningConsumer(message -> getLog().warn(message))
-                .build();
-            generator.generate();
-
-            getLog().info("FEEL validation generation completed successfully");
-            getLog().info("Output written to: " + outputFile);
-        } catch (MojoFailureException e) {
-            throw e;
-        } catch (Exception e) {
+                .build()
+                .generate();
+        } catch (FEELGenerationException e) {
+            // Spec-level problems are the author's to fix: a build failure, not a plugin crash.
+            throw new MojoFailureException(e.getMessage(), e);
+        } catch (RuntimeException e) {
             throw new MojoExecutionException("Error generating FEEL validations", e);
         }
+
+        getLog().info("FEEL validation generation completed successfully");
+        getLog().info("Output written to: " + outputFile);
+    }
+
+    private static List<String> parseMethods(String methods) {
+        return Arrays.stream(methods.split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .map(String::toUpperCase)
+            .toList();
     }
 }

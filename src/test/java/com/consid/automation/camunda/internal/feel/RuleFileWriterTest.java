@@ -1,7 +1,5 @@
 package com.consid.automation.camunda.internal.feel;
 
-import com.consid.automation.camunda.internal.model.*;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -22,7 +20,7 @@ class RuleFileWriterTest {
     private final RuleFileWriter writer = new RuleFileWriter();
 
     @Test
-    void test_write_does_create_file_when_parent_exists_as_expected() throws IOException {
+    void test_write_does_create_file_when_parent_exists() throws IOException {
         // given
         Path target = tempDir.resolve("output.feel");
 
@@ -34,7 +32,7 @@ class RuleFileWriterTest {
     }
 
     @Test
-    void test_write_does_create_missing_parent_directories_as_expected() throws IOException {
+    void test_write_does_create_missing_parent_directories() throws IOException {
         // given
         Path target = tempDir.resolve("nested/dirs/output.feel");
 
@@ -47,7 +45,7 @@ class RuleFileWriterTest {
     }
 
     @Test
-    void test_write_does_overwrite_existing_file_as_expected() throws IOException {
+    void test_write_does_overwrite_existing_file() throws IOException {
         // given
         Path target = tempDir.resolve("output.feel");
         Files.writeString(target, "previous");

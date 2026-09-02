@@ -3,22 +3,21 @@ package com.consid.automation.camunda.internal;
 import java.util.function.Consumer;
 
 /**
- * Collects warnings about author-detected-but-unsupported constructs in the
- * input spec. Lets the generator stay loud about "I saw this, I ignored it"
- * cases that used to be silent footguns:
+ * Routes build-time warnings to the consumer configured on the generator. Two
+ * kinds of message flow through here: OpenAPI parser validation messages, and
+ * constructs the generator detected but does not model — an {@code if}/{@code then}
+ * predicate outside the supported subset, a {@code oneOf} without
+ * {@code discriminator.mapping}, schema-form {@code additionalProperties}, a
+ * {@code required} name no schema declares. Reporting instead of silently
+ * skipping keeps the emitted FEEL honest about what it enforces.
  *
- * <ul>
- *   <li>An {@code if}/{@code then} predicate shape the extractor doesn't model</li>
- *   <li>{@code oneOf} without a {@code discriminator} + mapping (falling back to union-merge)</li>
- *   <li>Schema-form {@code additionalProperties} (only the boolean-false case is honored)</li>
- * </ul>
- *
- * <p>The consumer receives an already-formatted message string. The Mojo wires
- * it to {@code getLog().warn(...)}; the programmatic API defaults to a no-op
- * (the caller can pass their own consumer via {@code Builder.withWarningConsumer}).
+ * <p>Messages are pre-formatted as {@code [<location>] <message>}. The Maven Mojo
+ * wires the consumer to {@code getLog().warn(...)}; the programmatic API defaults
+ * to a no-op unless {@code Builder.withWarningConsumer} is used.
  */
 public final class Diagnostics {
 
+    /** Discards every warning. For callers and tests that don't observe diagnostics. */
     public static final Diagnostics NOOP = new Diagnostics(message -> {});
 
     private final Consumer<String> consumer;

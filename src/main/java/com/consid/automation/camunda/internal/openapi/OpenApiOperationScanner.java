@@ -1,5 +1,7 @@
 package com.consid.automation.camunda.internal.openapi;
 
+import com.consid.automation.camunda.internal.model.Endpoint;
+
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -8,6 +10,7 @@ import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -17,24 +20,22 @@ import java.util.Objects;
 /**
  * Walks an OpenAPI document and yields the validatable inputs — request body
  * schema and required query parameters — for each operation that matches the
- * configured HTTP methods and media type.
- * Keys in the returned map are FEEL output headings (e.g. {@code "# POST /customers"})
- * so downstream rendering can group rules by endpoint without further plumbing.
+ * configured HTTP methods and media type, keyed by {@link Endpoint} in document order.
  */
 public final class OpenApiOperationScanner {
 
     private static final String QUERY = "query";
 
     private final List<String> httpMethods;
-    private final String mediaType;
+    private final MediaTypeMatcher mediaTypeMatcher;
 
     public OpenApiOperationScanner(List<String> httpMethods, String mediaType) {
         this.httpMethods = List.copyOf(Objects.requireNonNull(httpMethods, "httpMethods"));
-        this.mediaType = Objects.requireNonNull(mediaType, "mediaType");
+        this.mediaTypeMatcher = new MediaTypeMatcher(Objects.requireNonNull(mediaType, "mediaType"));
     }
 
-    public Map<String, OperationInputs> scan(OpenAPI openAPI) {
-        Map<String, OperationInputs> inputsByEndpoint = new LinkedHashMap<>();
+    public Map<Endpoint, OperationInputs> scan(OpenAPI openAPI) {
+        Map<Endpoint, OperationInputs> inputsByEndpoint = new LinkedHashMap<>();
         if (openAPI.getPaths() == null) {
             return inputsByEndpoint;
         }
@@ -43,7 +44,7 @@ public final class OpenApiOperationScanner {
         return inputsByEndpoint;
     }
 
-    private void collectFromPath(String path, PathItem pathItem, Map<String, OperationInputs> sink) {
+    private void collectFromPath(String path, PathItem pathItem, Map<Endpoint, OperationInputs> sink) {
         Map<PathItem.HttpMethod, Operation> operations = pathItem.readOperationsMap();
         if (operations == null || operations.isEmpty()) {
             return;
@@ -60,21 +61,23 @@ public final class OpenApiOperationScanner {
             OperationInputs inputs = new OperationInputs(
                 requestBodySchema(operation), requiredQueryParameters(pathItem, operation));
             if (!inputs.isEmpty()) {
-                sink.put("# " + httpMethod.name() + " " + path, inputs);
+                sink.put(new Endpoint(httpMethod.name(), path), inputs);
             }
         }
     }
 
+    /** Picks the matching media type's schema, preferring an exact match over a {@code +json}-style suffix match. */
     private Schema<?> requestBodySchema(Operation operation) {
         RequestBody body = operation.getRequestBody();
         if (body == null || body.getContent() == null) {
             return null;
         }
-        MediaType media = body.getContent().get(mediaType);
-        if (media == null) {
-            return null;
-        }
-        return media.getSchema();
+        return body.getContent().entrySet().stream()
+            .filter(entry -> mediaTypeMatcher.matches(entry.getKey()))
+            .min(Comparator.comparingInt((Map.Entry<String, MediaType> entry) ->
+                mediaTypeMatcher.isExact(entry.getKey()) ? 0 : 1))
+            .map(entry -> entry.getValue().getSchema())
+            .orElse(null);
     }
 
     /**

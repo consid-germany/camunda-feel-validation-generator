@@ -19,10 +19,6 @@ public record StringTypeInfo(StringFormat format,
 
     public static final StringTypeInfo PLAIN = new StringTypeInfo(StringFormat.PLAIN, null, null, null);
 
-    public static StringTypeInfo of(StringFormat format) {
-        return new StringTypeInfo(format, null, null, null);
-    }
-
     public boolean hasMinLength() {
         return minLength != null && minLength > 0;
     }
