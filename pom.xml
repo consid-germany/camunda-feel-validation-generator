@@ -98,7 +98,7 @@
         <dependency>
             <groupId>io.swagger.parser.v3</groupId>
             <artifactId>swagger-parser</artifactId>
-            <version>2.1.42</version>
+            <version>2.1.47</version>
         </dependency>
 
         <!-- JUnit 5 for testing (versions from junit-bom; 6.x still RC) -->
