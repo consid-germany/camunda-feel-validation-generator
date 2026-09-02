@@ -50,7 +50,7 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
             .withOutputFilePath(outputFile.toAbsolutePath())
             .withResponse(true)
             .build();
-        Map<String, Object> context = buildEvaluationContext(loadJsonResource(scenario.payloadResource()));
+        Map<String, Object> context = buildEvaluationContext(scenario);
 
         // when
         generator.generate();
@@ -101,6 +101,47 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
             "response/responses-direct-invalid-body.json",
             false
         );
+    }
+
+    @Test
+    public void test_response_does_keep_body_field_and_query_parameter_of_same_name_distinct_as_expected() throws IOException {
+        // given — `tenant` is both a required body field and a required query parameter;
+        // the body carries it, the query string does not.
+        Path specFile = resolveResourcePath("openapi/customers-query-params-shadow-api.json");
+        Path outputFile = tempDir.resolve("shadow-response.feel");
+        var generator = FEELValidationGenerator.builder()
+            .withOpenApiPath(specFile.toAbsolutePath())
+            .withOutputFilePath(outputFile.toAbsolutePath())
+            .withResponse(true)
+            .build();
+        Map<String, Object> context = buildEvaluationContext(Map.of("tenant", "acme"), Map.of());
+
+        // when
+        generator.generate();
+        String actualOutput = Files.readString(outputFile).stripTrailing();
+        List<String> expressions = extractFeelExpressions(actualOutput);
+
+        // then — two independent rules with non-colliding ids ...
+        assertThat(actualOutput)
+            .contains("{ id: \"tenant-invalid\", field: \"tenant\", invalid: req.tenant=null")
+            .contains("{ id: \"params.tenant-invalid\", field: \"params.tenant\", invalid: request.params.tenant=null");
+
+        // ... and only the query-parameter rule fires for this request.
+        assertThat(expressions).hasSize(1);
+        var evaluation = FEEL_ENGINE.evalExpression(expressions.get(0), context);
+        assertThat(evaluation.isRight())
+            .withFailMessage(() -> "FEEL evaluation failure: " + evaluation.left().get())
+            .isTrue();
+        Map<String, Object> feelContext = toJavaMap(evaluation.getOrElse(null));
+        assertThat((Boolean) feelContext.get("isValid")).isFalse();
+        Map<String, Object> body = castToMap(normalizeValue(feelContext.get("body")));
+        List<Object> details = toJavaList(body.get("details"));
+        assertThat(details)
+            .extracting(detail -> castToMap(detail).get("id"))
+            .containsExactly("params.tenant-invalid");
+        assertThat(details)
+            .extracting(detail -> castToMap(detail).get("field"))
+            .containsExactly("params.tenant");
     }
 
     /**

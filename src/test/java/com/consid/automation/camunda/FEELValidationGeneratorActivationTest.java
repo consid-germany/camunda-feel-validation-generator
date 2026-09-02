@@ -57,7 +57,7 @@ public class FEELValidationGeneratorActivationTest extends AbstractFEELValidatio
             .withOutputFilePath(outputFile.toAbsolutePath())
             .withResponse(false)
             .build();
-        Map<String, Object> context = buildEvaluationContext(loadJsonResource(scenario.payloadResource()));
+        Map<String, Object> context = buildEvaluationContext(scenario);
 
         // when
         generator.generate();

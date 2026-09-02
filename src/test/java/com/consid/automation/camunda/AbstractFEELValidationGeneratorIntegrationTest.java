@@ -43,7 +43,8 @@ public abstract class AbstractFEELValidationGeneratorIntegrationTest {
     protected static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**
-     * One end-to-end test case: a spec, a payload, and the boolean verdict the
+     * One end-to-end test case: a spec, a body payload, an optional query-parameter
+     * payload (bound to {@code request.params}), and the boolean verdict the
      * activation FEEL is expected to produce. The same record drives the response
      * facade — response tests use {@link #expectedValid()} as the {@code isValid}
      * field's expected value while ignoring the body shape.
@@ -55,7 +56,18 @@ public abstract class AbstractFEELValidationGeneratorIntegrationTest {
     public record Scenario(String id,
                            String openApiResource,
                            String payloadResource,
+                           String paramsResource,
                            boolean expectedValid) {
+
+        /** Body-only scenario: {@code request.params} is an empty context. */
+        public Scenario(String id, String openApiResource, String payloadResource, boolean expectedValid) {
+            this(id, openApiResource, payloadResource, null, expectedValid);
+        }
+
+        public boolean hasParams() {
+            return paramsResource != null;
+        }
+
         @Override
         public String toString() {
             return id;
@@ -197,7 +209,41 @@ public abstract class AbstractFEELValidationGeneratorIntegrationTest {
                 "payloads/customers-kitchen-sink-valid-variables.json", true),
             new Scenario("customers-kitchen-sink-invalid",
                 "openapi/customers-kitchen-sink-api.json",
-                "payloads/customers-kitchen-sink-invalid-variables.json", false)
+                "payloads/customers-kitchen-sink-invalid-variables.json", false),
+            new Scenario("customers-query-params-valid",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-valid-params.json", true),
+            new Scenario("customers-query-params-missing-tenant",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-missing-tenant-params.json", false),
+            new Scenario("customers-query-params-tenant-not-in-enum",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-tenant-not-in-enum-params.json", false),
+            new Scenario("customers-query-params-bad-page-size",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-bad-page-size-params.json", false),
+            // Non-string query parameters are presence-only: values arrive as strings,
+            // so a numeric type check would reject every well-formed request.
+            new Scenario("customers-query-params-limit-not-numeric",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-limit-not-numeric-params.json", true),
+            new Scenario("customers-query-params-bad-request-id",
+                "openapi/customers-query-params-api.json",
+                "payloads/customers-query-params-variables.json",
+                "payloads/customers-query-params-bad-request-id-params.json", false),
+            new Scenario("customers-query-only-valid",
+                "openapi/customers-query-only-api.json",
+                "payloads/customers-query-only-variables.json",
+                "payloads/customers-query-only-valid-params.json", true),
+            new Scenario("customers-query-only-missing-since",
+                "openapi/customers-query-only-api.json",
+                "payloads/customers-query-only-variables.json",
+                "payloads/customers-query-only-missing-since-params.json", false)
         );
     }
 
@@ -257,14 +303,32 @@ public abstract class AbstractFEELValidationGeneratorIntegrationTest {
         return expressions;
     }
 
+    /**
+     * Builds the webhook evaluation context for a scenario: the body payload under
+     * {@code request.body} and, when the scenario declares one, the query-parameter
+     * payload under {@code request.params} (the Camunda webhook connector exposes
+     * query parameters there as a string-valued context).
+     */
+    protected Map<String, Object> buildEvaluationContext(Scenario scenario) throws IOException {
+        Map<String, Object> body = loadJsonResource(scenario.payloadResource());
+        Map<String, Object> params = scenario.hasParams()
+            ? loadJsonResource(scenario.paramsResource())
+            : Map.of();
+        return buildEvaluationContext(body, params);
+    }
+
     protected Map<String, Object> buildEvaluationContext(Map<String, Object> body) {
+        return buildEvaluationContext(body, Map.of());
+    }
+
+    protected Map<String, Object> buildEvaluationContext(Map<String, Object> body, Map<String, Object> params) {
         assertThat(body)
             .as("Sample request body should exist for scenario")
             .isNotNull();
         Map<String, Object> request = Map.of(
             "body", body,
             "headers", Map.of(),
-            "query", Map.of()
+            "params", params
         );
         return Map.of(
             "request", request,

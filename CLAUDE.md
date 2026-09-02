@@ -6,7 +6,9 @@ Guidance for Claude Code when working in this repository.
 
 A Maven plugin that reads an OpenAPI 3 document (JSON or YAML) and emits FEEL
 validation expressions for Camunda webhook connectors (Inbound/Intermediate).
-Output is consumed in the Web Modeler in one of two modes:
+Rules cover required request-body fields (read from `request.body`) and
+required query parameters (read from `request.params`). Output is consumed in
+the Web Modeler in one of two modes:
 
 - **Activation condition** (`addResponse=false`) — boolean FEEL.
 - **Response expression** (`addResponse=true`) — context FEEL with body + status.
@@ -33,17 +35,24 @@ Public API:
   Maven entry point (`@Mojo(name = "generate-feel")`). Validates inputs, then
   delegates.
 - [FEELValidationGenerator.java](src/main/java/com/consid/automation/camunda/FEELValidationGenerator.java) —
-  Builder-based facade. Orchestrates: parse → extract required fields →
-  build rules → render → write file.
+  Builder-based facade. Orchestrates: parse → scan operations → extract required
+  body fields and query parameters → build rules → render → write file.
 
 Internal collaborators, split by responsibility:
 
 - [internal/openapi/](src/main/java/com/consid/automation/camunda/internal/openapi/) —
-  OpenAPI traversal. [RequiredFieldsExtractor.java](src/main/java/com/consid/automation/camunda/internal/openapi/RequiredFieldsExtractor.java)
-  walks the schema (handling `$ref`, `allOf`, `anyOf`, `oneOf` with discriminator,
+  OpenAPI traversal. [OpenApiOperationScanner.java](src/main/java/com/consid/automation/camunda/internal/openapi/OpenApiOperationScanner.java)
+  walks paths/operations for the configured methods and media type and yields one
+  [OperationInputs](src/main/java/com/consid/automation/camunda/internal/openapi/OperationInputs.java)
+  (body schema + required query parameters, path-level merged with operation-level)
+  per endpoint heading. [RequiredFieldsExtractor.java](src/main/java/com/consid/automation/camunda/internal/openapi/RequiredFieldsExtractor.java)
+  walks the body schema (handling `$ref`, `allOf`, `anyOf`, `oneOf` with discriminator,
   nested objects, `dependentRequired`, `if`/`then`) to produce an
   [ExtractionResult](src/main/java/com/consid/automation/camunda/internal/openapi/ExtractionResult.java).
-  [FieldTypeResolver.java](src/main/java/com/consid/automation/camunda/internal/openapi/FieldTypeResolver.java)
+  [QueryParameterExtractor.java](src/main/java/com/consid/automation/camunda/internal/openapi/QueryParameterExtractor.java)
+  turns required query parameters into descriptors — string schemas keep their
+  constraints, everything else is presence-only because `request.params` values
+  are strings. [FieldTypeResolver.java](src/main/java/com/consid/automation/camunda/internal/openapi/FieldTypeResolver.java)
   maps each schema to a sealed [TypeInfo](src/main/java/com/consid/automation/camunda/internal/model/TypeInfo.java).
 - [internal/model/](src/main/java/com/consid/automation/camunda/internal/model/) —
   internal domain model: sealed `TypeInfo` (Boolean / Number / String / Array /
@@ -54,6 +63,9 @@ Internal collaborators, split by responsibility:
   (implements [ValidationRuleBuilder](src/main/java/com/consid/automation/camunda/internal/feel/ValidationRuleBuilder.java))
   + [FEELExpressionBuilder.java](src/main/java/com/consid/automation/camunda/internal/feel/FEELExpressionBuilder.java)
   turn the descriptor map into `ValidationRule` objects and emit the final FEEL text.
+  Body rules read `req.<path>` (`req` aliases `request.body`); query-parameter
+  rules read `request.params.<name>`, falling back to
+  `get value(request.params, "<name>")` for non-identifier names and FEEL keywords.
 - [internal/Diagnostics.java](src/main/java/com/consid/automation/camunda/internal/Diagnostics.java) —
   routes build-time warnings (unsupported-but-detected constructs) to the consumer
   passed via `Builder.withWarningConsumer(...)`; the Mojo wires it to `getLog().warn`.
@@ -69,15 +81,18 @@ mvn test                # tests only
 mvn install             # install the plugin into the local repository
 ```
 
-Integration tests under
-[AbstractFEELValidationGeneratorIntegrationTest.java](src/test/java/com/consid/automation/camunda/AbstractFEELValidationGeneratorIntegrationTest.java)
-compare generated output against fixtures in
-[src/test/resources/feel/](src/test/resources/feel/) and execute the generated
-FEEL against the Camunda `feel-engine` with payloads from
-[src/test/resources/payloads/](src/test/resources/payloads/). When you change FEEL
-output, update both the expected `.txt` fixture and any payload that depends on
-the new shape — running the engine catches divergence the string-diff alone
-misses.
+Integration tests are driven by the `scenarios()` table in
+[AbstractFEELValidationGeneratorIntegrationTest.java](src/test/java/com/consid/automation/camunda/AbstractFEELValidationGeneratorIntegrationTest.java).
+Each scenario pairs an OpenAPI fixture from
+[src/test/resources/openapi/](src/test/resources/openapi/) with a body payload
+(`*-variables.json`) and, for query-parameter cases, a params payload
+(`*-params.json`) from [src/test/resources/payloads/](src/test/resources/payloads/),
+plus the expected boolean verdict. The generated FEEL is executed against the
+Camunda `feel-engine` with `request.body` / `request.params` bound to those
+payloads — the assertion is the engine's verdict, not a string diff. When you
+add a mechanism, add a fixture pair plus at least one valid and one invalid
+scenario; the response snapshot under
+[src/test/resources/response/](src/test/resources/response/) pins the body shape.
 
 ## Conventions
 

@@ -20,7 +20,8 @@ import java.util.function.Consumer;
 
 /**
  * Entry point for FEEL validation generation. Coordinates the pipeline:
- * parse OpenAPI → scan operations → extract required fields → render FEEL → write.
+ * parse OpenAPI → scan operations → extract required body fields and query
+ * parameters → render FEEL → write.
  * Each stage lives in its own collaborator so this class stays a thin orchestrator.
  */
 public class FEELValidationGenerator {
@@ -45,8 +46,8 @@ public class FEELValidationGenerator {
 
     public void generate() throws IOException {
         OpenAPI openAPI = parseOpenAPI();
-        Map<String, Schema<?>> schemasByEndpoint = scanner.scan(openAPI);
-        Map<String, List<ValidationRule>> rulesByEndpoint = buildRules(openAPI, schemasByEndpoint);
+        Map<String, OperationInputs> inputsByEndpoint = scanner.scan(openAPI);
+        Map<String, List<ValidationRule>> rulesByEndpoint = buildRules(openAPI, inputsByEndpoint);
         writer.write(outputFilePath, ruleBuilder.render(rulesByEndpoint));
     }
 
@@ -59,12 +60,17 @@ public class FEELValidationGenerator {
     }
 
     private Map<String, List<ValidationRule>> buildRules(OpenAPI openAPI,
-                                                          Map<String, Schema<?>> schemasByEndpoint) {
-        RequiredFieldsExtractor fieldsExtractor =
-            new RequiredFieldsExtractor(new FieldTypeResolver(openAPI, diagnostics), diagnostics);
+                                                          Map<String, OperationInputs> inputsByEndpoint) {
+        FieldTypeResolver typeResolver = new FieldTypeResolver(openAPI, diagnostics);
+        RequiredFieldsExtractor fieldsExtractor = new RequiredFieldsExtractor(typeResolver, diagnostics);
+        QueryParameterExtractor parameterExtractor = new QueryParameterExtractor(typeResolver);
         Map<String, List<ValidationRule>> rulesByEndpoint = new LinkedHashMap<>();
-        schemasByEndpoint.forEach((heading, schema) -> {
-            List<ValidationRule> rules = rulesFor(heading, schema, fieldsExtractor);
+        inputsByEndpoint.forEach((heading, inputs) -> {
+            List<ValidationRule> rules = new ArrayList<>();
+            if (inputs.hasBody()) {
+                rules.addAll(bodyRules(heading, inputs.bodySchema(), fieldsExtractor));
+            }
+            rules.addAll(queryParameterRules(inputs, parameterExtractor));
             if (!rules.isEmpty()) {
                 rulesByEndpoint.put(heading, rules);
             }
@@ -72,8 +78,8 @@ public class FEELValidationGenerator {
         return rulesByEndpoint;
     }
 
-    private List<ValidationRule> rulesFor(String heading, Schema<?> schema,
-                                          RequiredFieldsExtractor fieldsExtractor) {
+    private List<ValidationRule> bodyRules(String heading, Schema<?> schema,
+                                           RequiredFieldsExtractor fieldsExtractor) {
         ExtractionResult extracted;
         try {
             extracted = fieldsExtractor.extract(schema);
@@ -88,6 +94,14 @@ public class FEELValidationGenerator {
         if (extracted.hasRootClosure()) {
             rules.add(ruleBuilder.createRootObjectRule(extracted.rootClosure()));
         }
+        return rules;
+    }
+
+    private List<ValidationRule> queryParameterRules(OperationInputs inputs,
+                                                     QueryParameterExtractor parameterExtractor) {
+        List<ValidationRule> rules = new ArrayList<>();
+        parameterExtractor.extract(inputs.requiredQueryParameters()).forEach((name, descriptor) ->
+            rules.add(ruleBuilder.createQueryParameterRule(name, descriptor)));
         return rules;
     }
 

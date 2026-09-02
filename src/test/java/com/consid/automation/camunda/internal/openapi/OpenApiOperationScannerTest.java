@@ -9,6 +9,7 @@ import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.media.Content;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +33,7 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(new OpenAPI());
+        Map<String, OperationInputs> result = scanner.scan(new OpenAPI());
 
         // then
         assertThat(result).isEmpty();
@@ -46,10 +47,11 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
-        assertThat(result).containsExactly(Map.entry("# POST /customers", bodySchema));
+        assertThat(result).containsOnlyKeys("# POST /customers");
+        assertThat(result.get("# POST /customers").bodySchema()).isSameAs(bodySchema);
     }
 
     @Test
@@ -60,21 +62,122 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
         assertThat(result).isEmpty();
     }
 
     @Test
-    void test_scan_does_skip_operations_without_request_body_as_expected() {
+    void test_scan_does_skip_operations_without_request_body_or_required_query_parameters_as_expected() {
         // given
+        Operation operation = new Operation()
+            .addParametersItem(queryParameter("verbose", false))
+            .addParametersItem(headerParameter("X-Trace-Id", true));
         OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem(
-            "/customers", new PathItem().post(new Operation())));
+            "/customers", new PathItem().post(operation)));
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
+
+        // then
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void test_scan_does_collect_required_query_parameters_next_to_body_as_expected() {
+        // given
+        Schema<?> bodySchema = new Schema<>().type("object");
+        Parameter tenant = queryParameter("tenant", true);
+        Operation operation = operationWithBody(JSON, bodySchema)
+            .addParametersItem(tenant)
+            .addParametersItem(queryParameter("verbose", false))
+            .addParametersItem(headerParameter("X-Trace-Id", true));
+        OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem(
+            "/customers", new PathItem().post(operation)));
+        OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
+
+        // when
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
+
+        // then
+        OperationInputs inputs = result.get("# POST /customers");
+        assertThat(inputs.bodySchema()).isSameAs(bodySchema);
+        assertThat(inputs.requiredQueryParameters()).containsExactly(tenant);
+    }
+
+    @Test
+    void test_scan_does_collect_operation_with_only_required_query_parameters_as_expected() {
+        // given
+        Parameter since = queryParameter("since", true);
+        OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem(
+            "/customers/sync", new PathItem().post(new Operation().addParametersItem(since))));
+        OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
+
+        // when
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
+
+        // then
+        assertThat(result).containsOnlyKeys("# POST /customers/sync");
+        OperationInputs inputs = result.get("# POST /customers/sync");
+        assertThat(inputs.hasBody()).isFalse();
+        assertThat(inputs.requiredQueryParameters()).containsExactly(since);
+    }
+
+    @Test
+    void test_scan_does_merge_path_level_query_parameters_with_operation_override_as_expected() {
+        // given — path-level `tenant` is overridden by the operation's own `tenant`,
+        // path-level `region` applies as-is.
+        Parameter pathTenant = queryParameter("tenant", true);
+        Parameter region = queryParameter("region", true);
+        Parameter operationTenant = queryParameter("tenant", true).description("operation-level");
+        Operation operation = new Operation().addParametersItem(operationTenant);
+        PathItem pathItem = new PathItem()
+            .addParametersItem(pathTenant)
+            .addParametersItem(region)
+            .post(operation);
+        OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem("/customers", pathItem));
+        OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
+
+        // when
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
+
+        // then
+        assertThat(result.get("# POST /customers").requiredQueryParameters())
+            .containsExactly(operationTenant, region);
+    }
+
+    @Test
+    void test_scan_does_drop_path_level_required_parameter_relaxed_to_optional_by_operation_as_expected() {
+        // given — the operation redeclares `tenant` as optional, which overrides the
+        // path-level `required: true`; `region` is untouched and stays required.
+        Parameter region = queryParameter("region", true);
+        PathItem pathItem = new PathItem()
+            .addParametersItem(queryParameter("tenant", true))
+            .addParametersItem(region)
+            .post(new Operation().addParametersItem(queryParameter("tenant", false)));
+        OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem("/customers", pathItem));
+        OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
+
+        // when
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
+
+        // then
+        assertThat(result.get("# POST /customers").requiredQueryParameters()).containsExactly(region);
+    }
+
+    @Test
+    void test_scan_does_ignore_path_level_optional_query_parameters_as_expected() {
+        // given
+        PathItem pathItem = new PathItem()
+            .addParametersItem(queryParameter("verbose", false))
+            .post(new Operation());
+        OpenAPI openAPI = new OpenAPI().paths(new Paths().addPathItem("/customers", pathItem));
+        OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
+
+        // when
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
         assertThat(result).isEmpty();
@@ -88,7 +191,7 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
         assertThat(result).isEmpty();
@@ -108,10 +211,11 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, "application/xml");
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
-        assertThat(result).containsExactly(Map.entry("# POST /customers", xmlSchema));
+        assertThat(result).containsOnlyKeys("# POST /customers");
+        assertThat(result.get("# POST /customers").bodySchema()).isSameAs(xmlSchema);
     }
 
     @Test
@@ -122,10 +226,11 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(List.of("POST", "BREW"), JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
-        assertThat(result).containsExactly(Map.entry("# POST /customers", bodySchema));
+        assertThat(result).containsOnlyKeys("# POST /customers");
+        assertThat(result.get("# POST /customers").bodySchema()).isSameAs(bodySchema);
     }
 
     @Test
@@ -140,7 +245,7 @@ class OpenApiOperationScannerTest {
         OpenApiOperationScanner scanner = new OpenApiOperationScanner(DEFAULT_METHODS, JSON);
 
         // when
-        Map<String, Schema<?>> result = scanner.scan(openAPI);
+        Map<String, OperationInputs> result = scanner.scan(openAPI);
 
         // then
         assertThat(result.keySet()).containsExactly("# POST /first", "# POST /second");
@@ -174,5 +279,15 @@ class OpenApiOperationScannerTest {
     private static Operation operationWithBody(String mediaType, Schema<?> schema) {
         Content content = new Content().addMediaType(mediaType, new MediaType().schema(schema));
         return new Operation().requestBody(new RequestBody().content(content));
+    }
+
+    private static Parameter queryParameter(String name, boolean required) {
+        return new Parameter().name(name).in("query").required(required)
+            .schema(new Schema<>().type("string"));
+    }
+
+    private static Parameter headerParameter(String name, boolean required) {
+        return new Parameter().name(name).in("header").required(required)
+            .schema(new Schema<>().type("string"));
     }
 }

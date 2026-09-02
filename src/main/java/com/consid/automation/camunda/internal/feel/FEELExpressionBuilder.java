@@ -193,7 +193,8 @@ public class FEELExpressionBuilder {
         return value.toPlainString();
     }
 
-    private static String escapeLiteral(String value) {
+    /** Escapes a Java string for embedding in a double-quoted FEEL string literal. */
+    static String escapeLiteral(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 

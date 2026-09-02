@@ -10,6 +10,7 @@ Pre-release work toward the project's first public Maven Central artifact. Signi
 
 ### Added
 
+- **Required query parameters**: `in: query` + `required: true` parameters (operation- or path-level, `$ref` resolved) emit rules against `request.params`. String schemas keep their constraints (`enum`, `pattern`, length, `format`); other types are presence-only because query values arrive as strings. Names that are not FEEL identifiers or collide with FEEL keywords are read via `get value(request.params, "<name>")`. Operations with required query parameters but no request body now produce a block; response-mode rules are identified as `params.<name>`.
 - **Array constraints**: `minItems`, `maxItems`, and `items` recursion — each element is validated against its full schema, including the element's own required fields.
 - **String constraints**: `minLength`, `maxLength`, `pattern`, plus built-in permissive regexes for `format: email` / `uuid` / `uri`.
 - **Temporal string formats**: `format: date` / `date-time` / `time` (via FEEL's `date(X)` / `date and time(X)` / `time(X)` parsers).
@@ -26,6 +27,7 @@ Pre-release work toward the project's first public Maven Central artifact. Signi
 - **Composition implies object**: `allOf` / `oneOf` / `anyOf` without an explicit `type: object` is now treated as an object, so inner required fields are honored without workarounds.
 - **Unresolved `$ref` errors** include the endpoint heading (e.g. `POST /customers`) so the broken reference is locatable in multi-endpoint specs.
 - **Internal model overhauled** to use sealed type hierarchies (`TypeInfo`, `Trigger`, `FeelLiteral`) — adding a new variant is one switch arm in one place instead of touching multiple files.
+- **`OpenApiOperationScanner`** (internal) now yields `OperationInputs` — body schema plus required query parameters — per endpoint instead of a bare schema; `ValidationRuleBuilder` gained `createQueryParameterRule`.
 - **Internal classes reorganized** under `com.consid.automation.camunda.internal.{openapi,model,feel}`; only `FEELValidationGenerator`, its `Builder`, and the Mojo are part of the public API.
 - **Repository flattened** from a multi-module reactor to a single root module.
 - **Dependency versions** managed via BOMs (`jackson-bom`, `junit-bom`, `mockito-bom`).

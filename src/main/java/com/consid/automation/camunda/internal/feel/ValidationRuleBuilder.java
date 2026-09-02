@@ -12,9 +12,16 @@ import java.util.Map;
 public interface ValidationRuleBuilder {
 
     /**
-     * Create a validation rule for the given field path and descriptor.
+     * Create a validation rule for the given request-body field path and descriptor.
      */
     ValidationRule createRule(String fieldPath, FieldDescriptor descriptor);
+
+    /**
+     * Create a validation rule for a query parameter marked {@code required: true}.
+     * Query parameters live under {@code request.params}, not the request body,
+     * so the rendered access path differs from {@link #createRule}.
+     */
+    ValidationRule createQueryParameterRule(String parameterName, FieldDescriptor descriptor);
 
     /**
      * Create a rule that enforces the root payload's

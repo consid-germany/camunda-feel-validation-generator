@@ -1,6 +1,6 @@
 # FEEL Validation Generator
 
-Maven plugin that reads an OpenAPI 3.x document (JSON or YAML) and emits FEEL validation expressions for Camunda webhook connectors (Inbound and Intermediate). Drop the output into the connector's `activationCondition` or `responseExpression` field to keep payload validation aligned with your API contract.
+Maven plugin that reads an OpenAPI 3.x document (JSON or YAML) and emits FEEL validation expressions for Camunda webhook connectors (Inbound and Intermediate). Drop the output into the connector's `activationCondition` or `responseExpression` field to keep request validation — required body fields and required query parameters — aligned with your API contract.
 
 Java 21. Three runtime dependencies: `swagger-parser`, `jackson-databind`, and `slf4j-simple` (test-only). No DI framework.
 
@@ -44,7 +44,7 @@ mvn com.consid.automation.camunda:feel-validation-generator:1.0.0:generate-feel 
 | `addResponse` | `feelValidationGenerator.addResponse` | `false` | `true` emits a response expression, `false` an activation condition. |
 | `successStatusCode` | `feelValidationGenerator.successStatusCode` | `201` | HTTP status returned in response mode when validation passes. |
 | `failStatusCode` | `feelValidationGenerator.failStatusCode` | `400` | HTTP status returned in response mode when validation fails. |
-| `methods` | `feelValidationGenerator.methods` | `POST,PUT,PATCH` | Comma-separated HTTP methods to scan. |
+| `methods` | `feelValidationGenerator.methods` | `POST,PUT,PATCH` | Comma-separated HTTP methods to scan. Add `GET` for query-parameter-only webhooks. |
 | `mediaType` | `feelValidationGenerator.mediaType` | `application/json` | Request body media type to read schemas from. |
 
 Status codes must fall in 100–599 or the build fails fast.
@@ -158,6 +158,39 @@ Each keyword is only emitted when declared — there is no implicit "non-empty" 
 |---|---|
 | `additionalProperties: false` | `(not(every k in get entries(X).key satisfies (k in (<declared keys>))))` — emits a separate `rootObject-invalid` rule when set at the root |
 
+### Query parameters
+
+Parameters declared with `in: query` and `required: true` — on the operation itself or inherited from the path item — become rules of their own. The Camunda webhook connector exposes query parameters under `request.params`, so these rules read from there instead of `req` (`request.body`):
+
+```yaml
+parameters:
+  - name: tenant
+    in: query
+    required: true
+    schema: { type: string, enum: [acme, globex] }
+  - name: page-size
+    in: query
+    required: true
+    schema: { type: string, pattern: "^[0-9]+$" }
+  - name: limit
+    in: query
+    required: true
+    schema: { type: integer }
+```
+
+```feel
+{invalid: request.params.limit=null},
+{invalid: get value(request.params, "page-size")=null or not(get value(request.params, "page-size") instance of string) or not(matches(get value(request.params, "page-size"), "^[0-9]+$"))},
+{invalid: request.params.tenant=null or not(request.params.tenant instance of string) or not(request.params.tenant in ("acme", "globex"))}
+```
+
+- Query parameter values arrive as **strings**, so only `type: string` schemas keep their constraints (`enum` / `const`, `pattern`, `minLength` / `maxLength`, `format`). Any other type (`integer`, `number`, `boolean`, `array`) is reduced to a presence check — `?limit=abc` passes.
+- `nullable` is ignored: `required: true` on a query parameter means "must be present".
+- Names that are not plain FEEL identifiers (`page-size`, `filter[status]`) or that collide with FEEL keywords (`in`, `and`, `null`, …) are read via `get value(request.params, "<name>")`, which the engine parses regardless of the name.
+- An operation-level parameter overrides a same-named path-level one. `$ref` parameters (`#/components/parameters/*`) are resolved. Header, cookie, and optional parameters are ignored.
+- In response mode the rule is identified as `params.<name>` (`id: "params.tenant-invalid", field: "params.tenant"`), so it cannot collide with a body field of the same name.
+- An operation without a request body still produces a block when it declares required query parameters. Rules are emitted body fields first, then query parameters sorted by name.
+
 ### Composition
 
 - **`$ref`** is resolved against `#/components/schemas/*`. An unresolved ref fails the build; the error names the endpoint.
@@ -198,7 +231,8 @@ Nested-object required fields inherit a conditionally-required parent's triggers
 - `if`/`then` outside the single-property `const` / `enum` subset is skipped — no multi-property `if`, no nested logic, no `pattern` / range / length predicates, no `else`.
 - `if`/`then` dependents must be sibling property names. To scope a conditional to nested fields, place the `if`/`then` inside the nested object's schema.
 - Schema-form `additionalProperties` (a sub-schema, not a boolean) is not honored — only `additionalProperties: false`.
-- Not yet supported: `uniqueItems`, `minProperties` / `maxProperties`, `readOnly` / `writeOnly`, format-driven validations beyond `date` / `date-time` / `time` / `email` / `uuid` / `uri`, request inputs other than `request.body`.
+- Query parameters with a non-string schema are presence-checked only (values arrive as strings; see [Query parameters](#query-parameters)).
+- Not yet supported: `uniqueItems`, `minProperties` / `maxProperties`, `readOnly` / `writeOnly`, format-driven validations beyond `date` / `date-time` / `time` / `email` / `uuid` / `uri`, request inputs other than `request.body` and `request.params` (headers, cookies, path parameters).
 
 ### Diagnostics
 

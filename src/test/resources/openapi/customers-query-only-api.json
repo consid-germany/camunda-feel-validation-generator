@@ -1,0 +1,24 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Query-Only API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/customers/sync": {
+      "post": {
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
