@@ -17,8 +17,6 @@ public record NumberTypeInfo(BigDecimal minimum,
                              BigDecimal exclusiveMaximum,
                              BigDecimal multipleOf) implements TypeInfo {
 
-    public static final NumberTypeInfo NONE = new NumberTypeInfo(null, null, null, null, null);
-
     public boolean hasMinimum() {
         return minimum != null;
     }

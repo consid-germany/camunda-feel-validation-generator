@@ -1,45 +1,95 @@
 package com.consid.automation.camunda.internal.openapi;
 
 import com.consid.automation.camunda.internal.Diagnostics;
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.model.ArrayTypeInfo;
+import com.consid.automation.camunda.internal.model.FeelLiteral;
+import com.consid.automation.camunda.internal.model.FeelString;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.StringTypeInfo;
+import com.consid.automation.camunda.internal.model.Trigger;
 
 import io.swagger.v3.oas.models.media.Discriminator;
 import io.swagger.v3.oas.models.media.Schema;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
- * Walks an OpenAPI schema and produces a path-keyed map of {@link FieldDescriptor}s
- * for everything the FEEL generator must enforce: direct required fields,
- * dependent-required dependents, if/then dependents, discriminated oneOf
- * branches, and nested-object inner required fields with trigger inheritance.
+ * Walks an OpenAPI request-body schema and produces a path-keyed map of
+ * {@link FieldDescriptor}s for everything the FEEL generator must enforce:
+ * direct required fields, dependent-required dependents, if/then dependents,
+ * discriminated oneOf branches, and nested-object inner required fields with
+ * trigger inheritance.
  */
 public class RequiredFieldsExtractor {
 
     private final FieldTypeResolver typeResolver;
     private final Diagnostics diagnostics;
 
-    public RequiredFieldsExtractor(FieldTypeResolver typeResolver) {
-        this(typeResolver, Diagnostics.NOOP);
-    }
-
     public RequiredFieldsExtractor(FieldTypeResolver typeResolver, Diagnostics diagnostics) {
-        this.typeResolver = typeResolver;
-        this.diagnostics = diagnostics;
+        this.typeResolver = Objects.requireNonNull(typeResolver, "typeResolver");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
     }
 
     public ExtractionResult extract(Schema<?> schema) {
-        Map<String, FieldDescriptor> requiredFields = new LinkedHashMap<>();
-        Set<Schema<?>> activeStack = Collections.newSetFromMap(new IdentityHashMap<>());
-        collectRequiredFields(schema, requiredFields, "", activeStack, List.of());
-        return new ExtractionResult(requiredFields, rootClosureFor(schema));
+        Traversal traversal = Traversal.root();
+        collect(schema, traversal);
+        return new ExtractionResult(traversal.requiredFields(), rootClosureFor(schema));
+    }
+
+    /**
+     * State threaded through the recursive walk. {@code requiredFields} is the
+     * shared sink. {@code pathPrefix} and {@code inheritedTriggers} say where in
+     * the payload we are and under which condition. {@code activeStack} holds the
+     * schemas on the current recursion path, so a self-referential schema
+     * terminates while a component reused at several paths is expanded each time.
+     */
+    private record Traversal(Map<String, FieldDescriptor> requiredFields,
+                             String pathPrefix,
+                             Set<Schema<?>> activeStack,
+                             List<Trigger> inheritedTriggers) {
+
+        static Traversal root() {
+            return new Traversal(new LinkedHashMap<>(), "",
+                Collections.newSetFromMap(new IdentityHashMap<>()), List.of());
+        }
+
+        /** Same sink and stack, descending into a nested object under the given triggers. */
+        Traversal descend(String path, List<Trigger> triggers) {
+            return new Traversal(requiredFields, path, activeStack, triggers);
+        }
+
+        /** Same position, different triggers (used for discriminated {@code oneOf} branches). */
+        Traversal withTriggers(List<Trigger> triggers) {
+            return new Traversal(requiredFields, pathPrefix, activeStack, triggers);
+        }
+
+        boolean isConditional() {
+            return !inheritedTriggers.isEmpty();
+        }
+
+        List<Trigger> triggersPlus(Trigger trigger) {
+            List<Trigger> merged = new ArrayList<>(inheritedTriggers);
+            merged.add(trigger);
+            return merged;
+        }
+
+        String fieldPath(String fieldName) {
+            return pathPrefix.isEmpty() ? fieldName : pathPrefix + "." + fieldName;
+        }
+
+        String location() {
+            return pathPrefix.isEmpty() ? "(root)" : pathPrefix;
+        }
     }
 
     /**
@@ -52,67 +102,84 @@ public class RequiredFieldsExtractor {
         if (root == null) {
             return null;
         }
-        FieldDescriptor rootDescriptor = typeResolver.resolve(root);
-        if (rootDescriptor.typeInfo() instanceof ObjectTypeInfo object && object.isClosed()) {
+        if (typeResolver.resolve(root).typeInfo() instanceof ObjectTypeInfo object && object.isClosed()) {
             return object;
         }
         return null;
     }
 
-    /**
-     * Recursively collects required fields from a schema.
-     * {@code activeStack} tracks schemas currently on the recursion path so a
-     * self-referential schema terminates while a component reused at multiple
-     * field paths is still expanded each time. {@code inheritedTriggers} carry
-     * conditional triggers from an ancestor down into a nested object's required
-     * fields.
-     */
-    private void collectRequiredFields(Schema<?> schema, Map<String, FieldDescriptor> requiredFields,
-                                       String pathPrefix, Set<Schema<?>> activeStack,
-                                       List<Trigger> inheritedTriggers) {
-        if (schema == null) {
-            return;
-        }
-        schema = typeResolver.resolveSchemaReference(schema);
-        if (schema == null) {
-            return;
-        }
-        if (!activeStack.add(schema)) {
+    private void collect(Schema<?> schema, Traversal traversal) {
+        Schema<?> resolved = typeResolver.resolveSchemaReference(schema);
+        if (resolved == null || !traversal.activeStack().add(resolved)) {
             return;
         }
         try {
-            processDirectRequiredFields(schema, requiredFields, pathPrefix, inheritedTriggers);
-            processDependentRequired(schema, requiredFields, pathPrefix, inheritedTriggers);
-            processConditional(schema, requiredFields, pathPrefix, inheritedTriggers);
-            processComposition(schema.getAllOf(), requiredFields, pathPrefix, activeStack, inheritedTriggers);
-            processOneOf(schema, requiredFields, pathPrefix, activeStack, inheritedTriggers);
-            processComposition(schema.getAnyOf(), requiredFields, pathPrefix, activeStack, inheritedTriggers);
-            processNestedProperties(schema, requiredFields, pathPrefix, activeStack);
+            collectDirectRequired(resolved, traversal);
+            collectDependentRequired(resolved, traversal);
+            collectConditional(resolved, traversal);
+            collectComposition(resolved.getAllOf(), traversal);
+            collectOneOf(resolved, traversal);
+            collectComposition(resolved.getAnyOf(), traversal);
+            collectNestedObjects(resolved, traversal);
         } finally {
-            activeStack.remove(schema);
+            traversal.activeStack().remove(resolved);
         }
     }
 
-    private void processDirectRequiredFields(Schema<?> schema, Map<String, FieldDescriptor> requiredFields,
-                                             String pathPrefix, List<Trigger> inheritedTriggers) {
-        if (schema.getRequired() == null || schema.getProperties() == null) {
+    private void collectDirectRequired(Schema<?> schema, Traversal traversal) {
+        if (schema.getRequired() == null) {
             return;
         }
-        List<String> requiredFieldsList = new ArrayList<>(schema.getRequired());
-        Collections.sort(requiredFieldsList);
-        var properties = schema.getProperties();
-        for (String requiredField : requiredFieldsList) {
-            String fullFieldPath = buildFieldPath(pathPrefix, requiredField);
-            if (requiredFields.containsKey(fullFieldPath)) {
+        for (String fieldName : sorted(schema.getRequired())) {
+            String fieldPath = traversal.fieldPath(fieldName);
+            if (traversal.requiredFields().containsKey(fieldPath)) {
                 continue;
             }
-            Schema<?> propertySchema = properties.get(requiredField);
-            FieldDescriptor base = enrichArrayItems(typeResolver.resolve(propertySchema), propertySchema);
-            FieldDescriptor descriptor = inheritedTriggers.isEmpty()
-                ? base
-                : base.withDependsOn(inheritedTriggers);
-            requiredFields.put(fullFieldPath, descriptor);
+            FieldDescriptor base = describeProperty(schema, fieldName, traversal);
+            traversal.requiredFields().put(fieldPath,
+                traversal.isConditional() ? base.withDependsOn(traversal.inheritedTriggers()) : base);
         }
+    }
+
+    /**
+     * Resolves the schema of a named property, looking through {@code allOf}
+     * branches (and their {@code $ref}s) when the property isn't declared on the
+     * schema itself. A property found nowhere still yields a presence-only
+     * descriptor, with a warning so a typo in {@code required} doesn't pass silently.
+     */
+    private FieldDescriptor describeProperty(Schema<?> schema, String fieldName, Traversal traversal) {
+        Schema<?> propertySchema = findPropertySchema(schema, fieldName,
+            Collections.newSetFromMap(new IdentityHashMap<>()));
+        if (propertySchema == null) {
+            diagnostics.warn(traversal.location(), "required property `" + fieldName
+                + "` is not declared in `properties` (nor in any `allOf` branch); "
+                + "only a presence check is emitted");
+        }
+        return enrichArrayItems(typeResolver.resolve(propertySchema), propertySchema);
+    }
+
+    @SuppressWarnings("rawtypes") // Schema's API exposes Map<String, Schema> raw.
+    private Schema<?> findPropertySchema(Schema<?> schema, String fieldName, Set<Schema<?>> visited) {
+        Schema<?> resolved = typeResolver.resolveSchemaReference(schema);
+        if (resolved == null || !visited.add(resolved)) {
+            return null;
+        }
+        Map<String, Schema> properties = resolved.getProperties();
+        if (properties != null && properties.get(fieldName) != null) {
+            return properties.get(fieldName);
+        }
+        if (resolved.getAllOf() == null) {
+            return null;
+        }
+        for (Object branch : resolved.getAllOf()) {
+            if (branch instanceof Schema<?> branchSchema) {
+                Schema<?> found = findPropertySchema(branchSchema, fieldName, visited);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -122,46 +189,25 @@ public class RequiredFieldsExtractor {
      * element-level required-field checks never get emitted.
      */
     private FieldDescriptor enrichArrayItems(FieldDescriptor descriptor, Schema<?> propertySchema) {
-        if (!(descriptor.typeInfo() instanceof ArrayTypeInfo array)) {
+        if (!(descriptor.typeInfo() instanceof ArrayTypeInfo array)
+            || propertySchema == null || propertySchema.getItems() == null) {
             return descriptor;
         }
-        Schema<?> items = propertySchema == null ? null : propertySchema.getItems();
-        if (items == null) {
-            return descriptor;
-        }
-        Map<String, FieldDescriptor> itemRequired = extractItemRequiredFields(items);
+        Traversal items = Traversal.root();
+        collect(propertySchema.getItems(), items);
         return descriptor.withTypeInfo(new ArrayTypeInfo(
-            array.minItems(), array.maxItems(), array.items(), itemRequired));
+            array.minItems(), array.maxItems(), array.items(), items.requiredFields()));
     }
 
-    private Map<String, FieldDescriptor> extractItemRequiredFields(Schema<?> itemsSchema) {
-        Map<String, FieldDescriptor> inner = new LinkedHashMap<>();
-        Set<Schema<?>> innerStack = Collections.newSetFromMap(new IdentityHashMap<>());
-        collectRequiredFields(itemsSchema, inner, "", innerStack, List.of());
-        return inner;
-    }
-
-    @SuppressWarnings("rawtypes")
-    private void processDependentRequired(Schema<?> schema,
-                                          Map<String, FieldDescriptor> requiredFields,
-                                          String pathPrefix,
-                                          List<Trigger> inheritedTriggers) {
+    private void collectDependentRequired(Schema<?> schema, Traversal traversal) {
         Map<String, List<String>> dependentRequired = schema.getDependentRequired();
         if (dependentRequired == null || dependentRequired.isEmpty()) {
             return;
         }
-        Map<String, Schema> properties = schema.getProperties();
-        if (properties == null) {
-            return;
-        }
-        List<String> triggers = new ArrayList<>(dependentRequired.keySet());
-        Collections.sort(triggers);
-        for (String trigger : triggers) {
-            Trigger presence = Trigger.presence(buildFieldPath(pathPrefix, trigger));
-            List<String> dependents = new ArrayList<>(dependentRequired.get(trigger));
-            Collections.sort(dependents);
-            for (String dependent : dependents) {
-                addConditional(properties, dependent, presence, pathPrefix, requiredFields, inheritedTriggers);
+        for (String triggerName : sorted(dependentRequired.keySet())) {
+            Trigger presence = Trigger.presence(traversal.fieldPath(triggerName));
+            for (String dependent : sorted(dependentRequired.get(triggerName))) {
+                addConditional(schema, dependent, presence, traversal);
             }
         }
     }
@@ -170,44 +216,34 @@ public class RequiredFieldsExtractor {
      * Reads the supported subset of JSON Schema {@code if}/{@code then}: a
      * single-property predicate with {@code const} or {@code enum} plus
      * {@code required: [<that property>]}, and a {@code then} block listing
-     * required field names. Shapes outside this subset are silently ignored.
+     * required field names. Shapes outside this subset are reported and skipped.
      */
-    @SuppressWarnings("rawtypes")
-    private void processConditional(Schema<?> schema,
-                                    Map<String, FieldDescriptor> requiredFields,
-                                    String pathPrefix,
-                                    List<Trigger> inheritedTriggers) {
+    private void collectConditional(Schema<?> schema, Traversal traversal) {
         Schema<?> ifSchema = schema.getIf();
         Schema<?> thenSchema = schema.getThen();
         if (ifSchema == null || thenSchema == null) {
             return;
         }
-        Trigger trigger = extractValueTrigger(ifSchema, pathPrefix);
+        Trigger trigger = extractValueTrigger(ifSchema, traversal);
         if (trigger == null) {
-            diagnostics.warn(locationLabel(pathPrefix),
+            diagnostics.warn(traversal.location(),
                 "if/then predicate shape not supported and the conditional was skipped; "
                     + "only a single-property predicate using `const` or `enum` "
                     + "(plus `required: [<that property>]`) is honored");
             return;
         }
         List<String> thenRequired = thenSchema.getRequired();
-        if (thenRequired == null || thenRequired.isEmpty()) {
+        if (thenRequired == null) {
             return;
         }
-        Map<String, Schema> properties = schema.getProperties();
-        if (properties == null) {
-            return;
-        }
-        List<String> dependents = new ArrayList<>(thenRequired);
-        Collections.sort(dependents);
-        for (String dependent : dependents) {
-            addConditional(properties, dependent, trigger, pathPrefix, requiredFields, inheritedTriggers);
+        for (String dependent : sorted(thenRequired)) {
+            addConditional(schema, dependent, trigger, traversal);
         }
     }
 
     /** Pulls a value trigger out of a supported {@code if} subschema, or null when the shape isn't handled. */
     @SuppressWarnings("rawtypes")
-    private Trigger extractValueTrigger(Schema<?> ifSchema, String pathPrefix) {
+    private Trigger extractValueTrigger(Schema<?> ifSchema, Traversal traversal) {
         Map<String, Schema> ifProperties = ifSchema.getProperties();
         List<String> ifRequired = ifSchema.getRequired();
         if (ifProperties == null || ifProperties.size() != 1
@@ -218,12 +254,11 @@ public class RequiredFieldsExtractor {
         if (!triggerProperty.equals(ifRequired.get(0))) {
             return null;
         }
-        Schema<?> predicate = ifProperties.get(triggerProperty);
-        List<FeelLiteral> allowedValues = literalValues(predicate);
+        List<FeelLiteral> allowedValues = literalValues(ifProperties.get(triggerProperty));
         if (allowedValues.isEmpty()) {
             return null;
         }
-        return Trigger.value(buildFieldPath(pathPrefix, triggerProperty), allowedValues);
+        return Trigger.value(traversal.fieldPath(triggerProperty), allowedValues);
     }
 
     private List<FeelLiteral> literalValues(Schema<?> predicate) {
@@ -239,34 +274,20 @@ public class RequiredFieldsExtractor {
         return List.of();
     }
 
-    @SuppressWarnings("rawtypes")
-    private void addConditional(Map<String, Schema> properties,
-                                String fieldName,
-                                Trigger trigger,
-                                String pathPrefix,
-                                Map<String, FieldDescriptor> requiredFields,
-                                List<Trigger> inheritedTriggers) {
-        String fieldPath = buildFieldPath(pathPrefix, fieldName);
-        FieldDescriptor existing = requiredFields.get(fieldPath);
-        if (existing != null && !existing.isConditional()) {
-            // Already unconditionally required — the stricter constraint wins.
-            return;
-        }
+    private void addConditional(Schema<?> schema, String fieldName, Trigger trigger, Traversal traversal) {
+        String fieldPath = traversal.fieldPath(fieldName);
+        FieldDescriptor existing = traversal.requiredFields().get(fieldPath);
         if (existing != null) {
-            // Multiple triggers for the same field: OR-merge them.
-            if (existing.dependsOn().contains(trigger)) {
-                return;
+            // An unconditional requirement already wins; several conditional triggers OR-merge.
+            if (existing.isConditional() && !existing.dependsOn().contains(trigger)) {
+                List<Trigger> merged = new ArrayList<>(existing.dependsOn());
+                merged.add(trigger);
+                traversal.requiredFields().put(fieldPath, existing.withDependsOn(merged));
             }
-            List<Trigger> merged = new ArrayList<>(existing.dependsOn());
-            merged.add(trigger);
-            requiredFields.put(fieldPath, existing.withDependsOn(merged));
             return;
         }
-        Schema<?> propertySchema = properties.get(fieldName);
-        FieldDescriptor base = enrichArrayItems(typeResolver.resolve(propertySchema), propertySchema);
-        List<Trigger> dependsOn = new ArrayList<>(inheritedTriggers);
-        dependsOn.add(trigger);
-        requiredFields.put(fieldPath, base.withDependsOn(dependsOn));
+        FieldDescriptor base = describeProperty(schema, fieldName, traversal);
+        traversal.requiredFields().put(fieldPath, base.withDependsOn(traversal.triggersPlus(trigger)));
     }
 
     /**
@@ -274,11 +295,9 @@ public class RequiredFieldsExtractor {
      * each branch's required fields become conditional on the discriminator
      * value, and the discriminator property itself is pinned to the enum of
      * mapping keys as an unconditional required field. Without a mapping,
-     * falls back to union-merge so existing fixtures keep working.
+     * falls back to union-merge and warns.
      */
-    private void processOneOf(Schema<?> schema, Map<String, FieldDescriptor> requiredFields,
-                              String pathPrefix, Set<Schema<?>> activeStack,
-                              List<Trigger> inheritedTriggers) {
+    private void collectOneOf(Schema<?> schema, Traversal traversal) {
         List<?> oneOf = schema.getOneOf();
         if (oneOf == null || oneOf.isEmpty()) {
             return;
@@ -287,15 +306,15 @@ public class RequiredFieldsExtractor {
         Map<String, String> mapping = discriminator == null ? null : discriminator.getMapping();
         String propertyName = discriminator == null ? null : discriminator.getPropertyName();
         if (propertyName == null || mapping == null || mapping.isEmpty()) {
-            diagnostics.warn(locationLabel(pathPrefix),
+            diagnostics.warn(traversal.location(),
                 "oneOf without `discriminator.mapping` falls back to union-merge "
                     + "(all branches' required fields are accumulated, which is stricter than the spec implies); "
                     + "add a `discriminator` with explicit `mapping` to scope branch fields to their type value");
-            processComposition(oneOf, requiredFields, pathPrefix, activeStack, inheritedTriggers);
+            collectComposition(oneOf, traversal);
             return;
         }
-        String discriminatorPath = buildFieldPath(pathPrefix, propertyName);
-        addDiscriminatorAsRequired(discriminatorPath, mapping.keySet(), requiredFields, inheritedTriggers);
+        String discriminatorPath = traversal.fieldPath(propertyName);
+        pinDiscriminator(discriminatorPath, mapping.keySet(), traversal);
 
         // Reverse-lookup: $ref → discriminator value, so each branch can find its trigger.
         Map<String, String> refToValue = new HashMap<>();
@@ -305,93 +324,75 @@ public class RequiredFieldsExtractor {
             if (!(element instanceof Schema<?> branch)) {
                 continue;
             }
-            String ref = branch.get$ref();
-            String discriminatorValue = ref == null ? null : refToValue.get(ref);
+            String discriminatorValue = branch.get$ref() == null ? null : refToValue.get(branch.get$ref());
             if (discriminatorValue == null) {
-                // Branch not in mapping — union-merge fallback for that branch alone.
-                collectRequiredFields(branch, requiredFields, pathPrefix, activeStack, inheritedTriggers);
+                // Branch not in the mapping: union-merge fallback for that branch alone.
+                collect(branch, traversal);
             } else {
-                Trigger branchTrigger = Trigger.value(
-                    discriminatorPath, List.of(new FeelString(discriminatorValue)));
-                List<Trigger> branchTriggers = new ArrayList<>(inheritedTriggers);
-                branchTriggers.add(branchTrigger);
-                collectRequiredFields(branch, requiredFields, pathPrefix, activeStack, branchTriggers);
+                Trigger branchTrigger = Trigger.value(discriminatorPath, List.of(new FeelString(discriminatorValue)));
+                collect(branch, traversal.withTriggers(traversal.triggersPlus(branchTrigger)));
             }
         }
     }
 
     /**
-     * Pins the discriminator property as an unconditionally required STRING
+     * Pins the discriminator property as an unconditionally required string
      * whose enum is the set of mapping keys. Without this the discriminator
      * would only appear conditionally on its own value — a missing property
      * would silently disable all branch checks.
      */
-    private void addDiscriminatorAsRequired(String discriminatorPath,
-                                            Set<String> allowedValues,
-                                            Map<String, FieldDescriptor> requiredFields,
-                                            List<Trigger> inheritedTriggers) {
-        if (requiredFields.containsKey(discriminatorPath)) {
+    private void pinDiscriminator(String discriminatorPath, Set<String> allowedValues, Traversal traversal) {
+        if (traversal.requiredFields().containsKey(discriminatorPath)) {
             return;
         }
         List<FeelLiteral> sortedValues = allowedValues.stream()
             .sorted()
             .<FeelLiteral>map(FeelString::new)
             .toList();
-        requiredFields.put(discriminatorPath, new FieldDescriptor(
-            StringTypeInfo.PLAIN, false, sortedValues, inheritedTriggers));
+        traversal.requiredFields().put(discriminatorPath, new FieldDescriptor(
+            StringTypeInfo.PLAIN, false, sortedValues, traversal.inheritedTriggers()));
     }
 
-    private void processComposition(List<?> schemas, Map<String, FieldDescriptor> requiredFields,
-                                    String pathPrefix, Set<Schema<?>> activeStack,
-                                    List<Trigger> inheritedTriggers) {
-        if (schemas == null || schemas.isEmpty()) {
+    private void collectComposition(List<?> schemas, Traversal traversal) {
+        if (schemas == null) {
             return;
         }
         for (Object element : schemas) {
-            if (element instanceof Schema<?> composedSchema) {
-                collectRequiredFields(composedSchema, requiredFields, pathPrefix, activeStack, inheritedTriggers);
+            if (element instanceof Schema<?> composed) {
+                collect(composed, traversal);
             }
         }
     }
 
     /**
-     * For each OBJECT-typed property at this level, decide whether to recurse into its schema:
-     * <ul>
-     *   <li>Not in {@code requiredFields} → skip (parent is plain-optional, inner required fields are dropped).</li>
-     *   <li>Unconditionally required → recurse, inner fields stay unconditional.</li>
-     *   <li>Conditionally required → recurse, inner fields inherit the parent's triggers.</li>
-     * </ul>
+     * For each object-typed property that is itself required at this level,
+     * recurse into its schema. Inner fields stay unconditional under an
+     * unconditionally required parent and inherit the parent's triggers under a
+     * conditionally required one. Plain-optional parents are skipped, so their
+     * inner required fields are dropped.
      */
     @SuppressWarnings("rawtypes") // Schema's API exposes Map<String, Schema> raw.
-    private void processNestedProperties(Schema<?> schema, Map<String, FieldDescriptor> requiredFields,
-                                         String pathPrefix, Set<Schema<?>> activeStack) {
+    private void collectNestedObjects(Schema<?> schema, Traversal traversal) {
         Map<String, Schema> properties = schema.getProperties();
         if (properties == null) {
             return;
         }
-        List<String> propertyNames = new ArrayList<>(properties.keySet());
-        Collections.sort(propertyNames);
-        for (String propName : propertyNames) {
-            Schema<?> propSchema = properties.get(propName);
-            String newPath = buildFieldPath(pathPrefix, propName);
-            FieldDescriptor descriptor = typeResolver.resolve(propSchema);
-            if (!(descriptor.typeInfo() instanceof ObjectTypeInfo)) {
-                continue;
-            }
-            FieldDescriptor parent = requiredFields.get(newPath);
+        for (String propertyName : sorted(properties.keySet())) {
+            String path = traversal.fieldPath(propertyName);
+            FieldDescriptor parent = traversal.requiredFields().get(path);
             if (parent == null) {
                 continue;
             }
+            Schema<?> propertySchema = properties.get(propertyName);
+            if (!(typeResolver.resolve(propertySchema).typeInfo() instanceof ObjectTypeInfo)) {
+                continue;
+            }
             List<Trigger> downstream = parent.isConditional() ? parent.dependsOn() : List.of();
-            collectRequiredFields(propSchema, requiredFields, newPath, activeStack, downstream);
+            collect(propertySchema, traversal.descend(path, downstream));
         }
     }
 
-    private String buildFieldPath(String pathPrefix, String fieldName) {
-        return pathPrefix.isEmpty() ? fieldName : pathPrefix + "." + fieldName;
-    }
-
-    private String locationLabel(String pathPrefix) {
-        return pathPrefix.isEmpty() ? "(root)" : pathPrefix;
+    private static List<String> sorted(Collection<String> names) {
+        return names.stream().sorted().toList();
     }
 }

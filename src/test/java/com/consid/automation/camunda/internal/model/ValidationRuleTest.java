@@ -1,46 +1,26 @@
 package com.consid.automation.camunda.internal.model;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import com.consid.automation.camunda.internal.model.ValidationRule.InputSource;
 
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ValidationRuleTest {
 
     @Test
-    void test_factory_method_does_create_immutable_rule_as_expected() {
-        // given
-        String id = "field-invalid";
-        String invalidExpression = "field=null";
-        String fieldPath = "field";
-
-        // when
-        ValidationRule rule = ValidationRule.create(id, invalidExpression, fieldPath);
-
-        // then
-        assertThat(rule.id()).isEqualTo(id);
-        assertThat(rule.invalidExpression()).isEqualTo(invalidExpression);
-        assertThat(rule.fieldPath()).isEqualTo(fieldPath);
-    }
-
-    @Test
-    void test_constructor_does_reject_null_values_as_expected() {
-        // given
-        String expression = "expr";
-        String field = "field";
-
-        // when // then
-        assertThatThrownBy(() -> ValidationRule.create(null, expression, field))
+    void test_constructor_does_reject_null_components() {
+        assertThatThrownBy(() -> new ValidationRule(null, "expr", "field", InputSource.BODY))
             .isInstanceOf(NullPointerException.class)
             .hasMessageContaining("id");
-
-        assertThatThrownBy(() -> ValidationRule.create("id", null, field))
+        assertThatThrownBy(() -> new ValidationRule("id", null, "field", InputSource.BODY))
             .isInstanceOf(NullPointerException.class)
             .hasMessageContaining("invalidExpression");
-
-        assertThatThrownBy(() -> ValidationRule.create("id", expression, null))
+        assertThatThrownBy(() -> new ValidationRule("id", "expr", null, InputSource.BODY))
             .isInstanceOf(NullPointerException.class)
             .hasMessageContaining("fieldPath");
+        assertThatThrownBy(() -> new ValidationRule("id", "expr", "field", null))
+            .isInstanceOf(NullPointerException.class)
+            .hasMessageContaining("source");
     }
 }

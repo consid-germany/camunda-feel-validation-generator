@@ -1,6 +1,13 @@
 package com.consid.automation.camunda.internal.openapi;
 
-import com.consid.automation.camunda.internal.model.*;
+import com.consid.automation.camunda.internal.Diagnostics;
+import com.consid.automation.camunda.internal.model.FeelBoolean;
+import com.consid.automation.camunda.internal.model.FeelString;
+import com.consid.automation.camunda.internal.model.FieldDescriptor;
+import com.consid.automation.camunda.internal.model.ObjectTypeInfo;
+import com.consid.automation.camunda.internal.model.StringTypeInfo;
+import com.consid.automation.camunda.internal.model.Trigger;
+import com.consid.automation.camunda.internal.model.UnknownTypeInfo;
 
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.media.Schema;
@@ -23,12 +30,12 @@ class RequiredFieldsExtractorTest {
     @BeforeEach
     void setUp() {
         OpenAPI openAPI = new OpenAPI();
-        FieldTypeResolver typeResolver = new FieldTypeResolver(openAPI);
-        extractor = new RequiredFieldsExtractor(typeResolver);
+        FieldTypeResolver typeResolver = new FieldTypeResolver(openAPI, Diagnostics.NOOP);
+        extractor = new RequiredFieldsExtractor(typeResolver, Diagnostics.NOOP);
     }
 
     @Test
-    void test_extract_simple_required_field_does_capture_entry_as_expected() {
+    void test_extract_simple_required_field_does_capture_entry() {
         // given
         Schema<?> schema = new Schema<>();
         schema.setRequired(Arrays.asList("username"));
@@ -42,7 +49,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_required_fields_does_ignore_optional_fields_as_expected() {
+    void test_extract_required_fields_does_ignore_optional_fields() {
         // given
         Schema<?> schema = new Schema<>();
         schema.setRequired(Arrays.asList("username"));
@@ -59,7 +66,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_does_emit_full_dot_path_for_nested_fields_as_expected() {
+    void test_extract_does_emit_full_dot_path_for_nested_fields() {
         // given
         Schema<?> nestedSchema = new Schema<>();
         nestedSchema.setRequired(Arrays.asList("content"));
@@ -78,7 +85,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_allof_does_merge_required_fields_from_each_branch_as_expected() {
+    void test_extract_allof_does_merge_required_fields_from_each_branch() {
         // given
         Schema<?> baseSchema = new Schema<>();
         baseSchema.setRequired(Arrays.asList("id"));
@@ -99,7 +106,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_oneof_does_collect_required_fields_from_each_branch_as_expected() {
+    void test_extract_oneof_does_collect_required_fields_from_each_branch() {
         // given
         Schema<?> firstOption = new Schema<>();
         firstOption.setRequired(Arrays.asList("name"));
@@ -120,7 +127,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_anyof_does_collect_required_fields_from_each_branch_as_expected() {
+    void test_extract_anyof_does_collect_required_fields_from_each_branch() {
         // given
         Schema<?> firstOption = new Schema<>();
         firstOption.setRequired(Arrays.asList("username"));
@@ -141,7 +148,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_empty_schema_does_return_empty_map_as_expected() {
+    void test_extract_empty_schema_does_return_empty_map() {
         // when
         Map<String, FieldDescriptor> result = extractor.extract(new Schema<>()).requiredFields();
 
@@ -150,7 +157,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_null_schema_does_return_empty_map_as_expected() {
+    void test_extract_null_schema_does_return_empty_map() {
         // when
         Map<String, FieldDescriptor> result = extractor.extract(null).requiredFields();
 
@@ -159,7 +166,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_dependent_required_does_mark_field_as_conditional_as_expected() {
+    void test_extract_dependent_required_does_mark_field_as_conditional() {
         // given
         Schema<?> schema = new Schema<>();
         schema.addProperty("shippingAddress", new Schema<>().type("object"));
@@ -178,7 +185,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_dependent_required_does_not_downgrade_unconditional_required_as_expected() {
+    void test_extract_dependent_required_does_not_downgrade_unconditional_required() {
         // given
         Schema<?> schema = new Schema<>();
         schema.setRequired(List.of("shippingCarrier"));
@@ -196,7 +203,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_dependent_required_does_or_merge_multiple_triggers_as_expected() {
+    void test_extract_dependent_required_does_or_merge_multiple_triggers() {
         // given
         Schema<?> schema = new Schema<>();
         schema.addProperty("a", new Schema<>().type("string"));
@@ -217,7 +224,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_if_then_with_const_does_mark_field_with_value_trigger_as_expected() {
+    void test_extract_if_then_with_const_does_mark_field_with_value_trigger() {
         // given — "if paymentMethod = 'card', then cardNumber is required"
         Schema<?> ifSchema = new Schema<>();
         ifSchema.addProperty("paymentMethod", new Schema<>()._const("card"));
@@ -243,7 +250,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_if_then_with_enum_does_mark_field_with_multi_value_trigger_as_expected() {
+    void test_extract_if_then_with_enum_does_mark_field_with_multi_value_trigger() {
         // given — "if tier in [gold, platinum], then discountCode is required"
         Schema<?> ifSchema = new Schema<>();
         ifSchema.addProperty("tier", new Schema<>()._enum(List.of("gold", "platinum")));
@@ -266,7 +273,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_if_then_with_unsupported_shape_does_skip_silently_as_expected() {
+    void test_extract_if_then_with_unsupported_shape_does_skip_conditional() {
         // given — multi-property if is outside the supported subset
         Schema<?> ifSchema = new Schema<>();
         ifSchema.addProperty("a", new Schema<>()._const("x"));
@@ -292,7 +299,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_conditional_nested_required_propagates_trigger_to_inner_fields_as_expected() {
+    void test_extract_conditional_nested_required_propagates_trigger_to_inner_fields() {
         // given — when parent is conditional on a value-trigger, its inner required fields inherit the same trigger
         Schema<?> deliverySchema = new Schema<>().type("object");
         deliverySchema.setRequired(List.of("address"));
@@ -322,7 +329,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_plain_optional_nested_object_does_omit_inner_required_fields_as_expected() {
+    void test_extract_plain_optional_nested_object_does_omit_inner_required_fields() {
         // given — profile is OPTIONAL at root (not in required, no triggers); inner required should not leak out
         Schema<?> profile = new Schema<>().type("object");
         profile.setRequired(List.of("bio"));
@@ -342,7 +349,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_self_referential_schema_does_terminate_at_cycle_as_expected() {
+    void test_extract_self_referential_schema_does_terminate_at_cycle() {
         // given — a node that references itself; without cycle detection this would recurse forever
         Schema<?> node = new Schema<>();
         node.type("object");
@@ -360,7 +367,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_oneof_with_discriminator_does_make_branch_fields_conditional_on_value_as_expected() {
+    void test_extract_oneof_with_discriminator_does_make_branch_fields_conditional_on_value() {
         // given — typical webhook event shape: a `type` discriminator selects one of two payload schemas
         io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
         io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
@@ -389,7 +396,8 @@ class RequiredFieldsExtractorTest {
             "invoice.failed", "#/components/schemas/InvoiceFailed"));
         root.setDiscriminator(d);
 
-        RequiredFieldsExtractor disc = new RequiredFieldsExtractor(new FieldTypeResolver(openAPI));
+        RequiredFieldsExtractor disc = new RequiredFieldsExtractor(
+            new FieldTypeResolver(openAPI, Diagnostics.NOOP), Diagnostics.NOOP);
 
         // when
         Map<String, FieldDescriptor> result = disc.extract(root).requiredFields();
@@ -409,7 +417,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_oneof_with_discriminator_does_make_discriminator_field_unconditionally_required_as_expected() {
+    void test_extract_oneof_with_discriminator_does_make_discriminator_field_unconditionally_required() {
         // given — the discriminator property itself must always be present so we know which branch applies
         io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
         io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
@@ -433,7 +441,8 @@ class RequiredFieldsExtractorTest {
         d.setMapping(Map.of("a-event", "#/components/schemas/A", "b-event", "#/components/schemas/B"));
         root.setDiscriminator(d);
 
-        RequiredFieldsExtractor disc = new RequiredFieldsExtractor(new FieldTypeResolver(openAPI));
+        RequiredFieldsExtractor disc = new RequiredFieldsExtractor(
+            new FieldTypeResolver(openAPI, Diagnostics.NOOP), Diagnostics.NOOP);
 
         // when
         Map<String, FieldDescriptor> result = disc.extract(root).requiredFields();
@@ -450,7 +459,7 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_oneof_without_discriminator_does_still_union_merge_as_expected() {
+    void test_extract_oneof_without_discriminator_does_still_union_merge() {
         // given — backward compatibility: without discriminator, fall back to today's union-merge
         Schema<?> first = new Schema<>().type("object");
         first.setRequired(List.of("a"));
@@ -470,7 +479,59 @@ class RequiredFieldsExtractorTest {
     }
 
     @Test
-    void test_extract_shared_component_does_expand_at_every_reference_as_expected() {
+    void test_extract_required_declared_next_to_allof_does_resolve_property_from_branch() {
+        // given — a common composition shape: the parent lists `required`, the branch declares the properties
+        Schema<?> base = new Schema<>().type("object");
+        base.addProperty("id", new Schema<>().type("string"));
+        base.addProperty("extra", new Schema<>().type("string").minLength(2));
+        Schema<?> root = new Schema<>();
+        root.setAllOf(List.of(base));
+        root.setRequired(List.of("extra"));
+
+        // when
+        Map<String, FieldDescriptor> result = extractor.extract(root).requiredFields();
+
+        // then — typed from the branch, not a bare presence check
+        assertThat(result).containsOnlyKeys("extra");
+        assertThat(result.get("extra").typeInfo())
+            .isEqualTo(new StringTypeInfo(StringTypeInfo.StringFormat.PLAIN, 2, null, null));
+    }
+
+    @Test
+    void test_extract_required_property_declared_nowhere_does_emit_presence_only_rule() {
+        // given — `misspelt` is required but no schema declares it (typo in the spec).
+        // `required` is set before `properties`: swagger-core's setRequired drops names
+        // absent from an already-populated properties map, mirroring the parser's order.
+        Schema<?> root = new Schema<>().type("object");
+        root.setRequired(List.of("misspelt", "name"));
+        root.addProperty("name", new Schema<>().type("string"));
+
+        // when
+        Map<String, FieldDescriptor> result = extractor.extract(root).requiredFields();
+
+        // then — the requirement is still enforced, as a presence check
+        assertThat(result).containsOnlyKeys("misspelt", "name");
+        assertThat(result.get("misspelt")).isEqualTo(FieldDescriptor.of(UnknownTypeInfo.INSTANCE));
+    }
+
+    @Test
+    void test_extract_dependent_required_without_properties_does_still_mark_dependent() {
+        // given — dependentRequired on a schema with no `properties` block at all
+        Schema<?> root = new Schema<>().type("object");
+        root.setDependentRequired(Map.of("coupon", List.of("couponCode")));
+
+        // when
+        Map<String, FieldDescriptor> result = extractor.extract(root).requiredFields();
+
+        // then
+        FieldDescriptor couponCode = result.get("couponCode");
+        assertThat(couponCode).isNotNull();
+        assertThat(couponCode.typeInfo()).isEqualTo(UnknownTypeInfo.INSTANCE);
+        assertThat(couponCode.dependsOn()).containsExactly(Trigger.presence("coupon"));
+    }
+
+    @Test
+    void test_extract_shared_component_does_expand_at_every_reference() {
         // given
         Schema<?> sharedAddress = new Schema<>();
         sharedAddress.setRequired(Arrays.asList("city", "street"));

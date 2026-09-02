@@ -16,14 +16,8 @@ public record ArrayTypeInfo(Integer minItems,
                             FieldDescriptor items,
                             Map<String, FieldDescriptor> itemRequiredFields) implements TypeInfo {
 
-    public static final ArrayTypeInfo NONE = new ArrayTypeInfo(null, null, null, Map.of());
-
     public ArrayTypeInfo {
         itemRequiredFields = itemRequiredFields == null ? Map.of() : Map.copyOf(itemRequiredFields);
-    }
-
-    public ArrayTypeInfo(Integer minItems, Integer maxItems) {
-        this(minItems, maxItems, null, Map.of());
     }
 
     public boolean hasMinItems() {

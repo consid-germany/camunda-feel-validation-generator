@@ -1,8 +1,6 @@
 package com.consid.automation.camunda;
 
-import com.consid.automation.camunda.internal.feel.*;
-import com.consid.automation.camunda.internal.model.*;
-import com.consid.automation.camunda.internal.openapi.*;
+import com.consid.automation.camunda.internal.feel.FEELRuleGenerator;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -41,7 +39,7 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
 
     @ParameterizedTest
     @MethodSource("com.consid.automation.camunda.AbstractFEELValidationGeneratorIntegrationTest#scenarios")
-    public void test_response_does_emit_parseable_feel_with_expected_verdict_as_expected(Scenario scenario) throws IOException {
+    public void test_response_does_emit_parseable_feel_with_expected_verdict(Scenario scenario) throws IOException {
         // given
         Path specFile = resolveResourcePath(scenario.openApiResource());
         Path outputFile = tempDir.resolve(scenario.id() + "-response.feel");
@@ -50,7 +48,7 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
             .withOutputFilePath(outputFile.toAbsolutePath())
             .withResponse(true)
             .build();
-        Map<String, Object> context = buildEvaluationContext(loadJsonResource(scenario.payloadResource()));
+        Map<String, Object> context = buildEvaluationContext(scenario);
 
         // when
         generator.generate();
@@ -68,7 +66,7 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
                 .withFailMessage(() -> "FEEL evaluation failure: " + evaluation.left().get())
                 .isTrue();
 
-            Map<String, Object> feelContext = toJavaMap(evaluation.getOrElse(null));
+            Map<String, Object> feelContext = asMap(evaluation.getOrElse(null));
             assertThat(feelContext)
                 .as("Response context shape for %s", scenario.id())
                 .containsKeys("isValid", "statusCode", "body");
@@ -82,25 +80,65 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
     }
 
     @Test
-    public void test_response_body_does_match_snapshot_for_valid_payload_as_expected() throws IOException {
+    public void test_response_body_does_match_snapshot_for_valid_payload() throws IOException {
         runBodySnapshotScenario(
             "responses-direct-valid",
             "openapi/responses-direct-api.json",
-            "payloads/responses-direct-variables.json",
+            "payloads/responses-direct-body.json",
             "response/responses-direct-valid-body.json",
             true
         );
     }
 
     @Test
-    public void test_response_body_does_match_snapshot_for_invalid_payload_as_expected() throws IOException {
+    public void test_response_body_does_match_snapshot_for_invalid_payload() throws IOException {
         runBodySnapshotScenario(
             "responses-direct-invalid",
             "openapi/responses-direct-api.json",
-            "payloads/responses-direct-invalid-variables.json",
+            "payloads/responses-direct-invalid-body.json",
             "response/responses-direct-invalid-body.json",
             false
         );
+    }
+
+    @Test
+    public void test_response_does_keep_body_field_and_query_parameter_of_same_name_distinct() throws IOException {
+        // given — `tenant` is both a required body field and a required query parameter;
+        // the body carries it, the query string does not.
+        Path specFile = resolveResourcePath("openapi/customers-query-params-shadow-api.json");
+        Path outputFile = tempDir.resolve("shadow-response.feel");
+        var generator = FEELValidationGenerator.builder()
+            .withOpenApiPath(specFile.toAbsolutePath())
+            .withOutputFilePath(outputFile.toAbsolutePath())
+            .withResponse(true)
+            .build();
+        Map<String, Object> context = buildEvaluationContext(Map.of("tenant", "acme"), Map.of());
+
+        // when
+        generator.generate();
+        String actualOutput = Files.readString(outputFile).stripTrailing();
+        List<String> expressions = extractFeelExpressions(actualOutput);
+
+        // then — two independent rules with non-colliding ids ...
+        assertThat(actualOutput)
+            .contains("{ id: \"tenant-invalid\", field: \"tenant\", invalid: req.tenant=null")
+            .contains("{ id: \"params.tenant-invalid\", field: \"params.tenant\", invalid: request.params.tenant=null");
+
+        // ... and only the query-parameter rule fires for this request.
+        assertThat(expressions).hasSize(1);
+        var evaluation = FEEL_ENGINE.evalExpression(expressions.get(0), context);
+        assertThat(evaluation.isRight())
+            .withFailMessage(() -> "FEEL evaluation failure: " + evaluation.left().get())
+            .isTrue();
+        Map<String, Object> feelContext = asMap(evaluation.getOrElse(null));
+        assertThat((Boolean) feelContext.get("isValid")).isFalse();
+        List<Object> details = asList(asMap(feelContext.get("body")).get("details"));
+        assertThat(details)
+            .extracting(detail -> asMap(detail).get("id"))
+            .containsExactly("params.tenant-invalid");
+        assertThat(details)
+            .extracting(detail -> asMap(detail).get("field"))
+            .containsExactly("params.tenant");
     }
 
     /**
@@ -139,18 +177,18 @@ public class FEELValidationGeneratorResponseTest extends AbstractFEELValidationG
                 .withFailMessage(() -> "FEEL evaluation failure: " + evaluation.left().get())
                 .isTrue();
 
-            Map<String, Object> feelContext = toJavaMap(evaluation.getOrElse(null));
+            Map<String, Object> feelContext = asMap(evaluation.getOrElse(null));
             assertThat((Boolean) feelContext.get("isValid"))
                 .as("Response validity for %s", scenarioId)
                 .isEqualTo(expectedValid);
             assertThat(intStatus(feelContext.get("statusCode")))
                 .as("Status code for %s", scenarioId)
                 .isEqualTo(expectedValid ? 201 : 400);
-            assertThat(castToMap(normalizeValue(feelContext.get("body"))))
+            assertThat(asMap(feelContext.get("body")))
                 .as("Response body for %s", scenarioId)
                 .usingRecursiveComparison()
                 .withComparatorForType(NUMBER_COMPARATOR, Number.class)
-                .isEqualTo(castToMap(normalizeValue(expectedBody)));
+                .isEqualTo(asMap(expectedBody));
         }
     }
 

@@ -6,7 +6,7 @@
 
     <groupId>com.consid.automation.camunda</groupId>
     <artifactId>feel-validation-generator</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.0-SNAPSHOT</version>
     <packaging>maven-plugin</packaging>
 
     <name>FEEL Validation Generator</name>
@@ -53,8 +53,6 @@
     </issueManagement>
 
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -62,7 +60,7 @@
 
     <dependencyManagement>
         <dependencies>
-            <!-- Aligns jackson-databind with its jackson-core / jackson-annotations transitives. -->
+            <!-- Pins the Jackson artifacts swagger-parser pulls in transitively to one consistent version. -->
             <dependency>
                 <groupId>com.fasterxml.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
@@ -78,14 +76,6 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!-- Aligns mockito-core / mockito-junit-jupiter and pins byte-buddy. -->
-            <dependency>
-                <groupId>org.mockito</groupId>
-                <artifactId>mockito-bom</artifactId>
-                <version>5.23.0</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -98,35 +88,17 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.maven</groupId>
-            <artifactId>maven-model</artifactId>
-            <version>3.9.9</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.maven</groupId>
-            <artifactId>maven-artifact</artifactId>
-            <version>3.9.9</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
             <groupId>org.apache.maven.plugin-tools</groupId>
             <artifactId>maven-plugin-annotations</artifactId>
             <version>3.13.1</version>
             <scope>provided</scope>
         </dependency>
 
-        <!-- OpenAPI Parser -->
+        <!-- The only runtime dependency. Brings swagger-core and Jackson transitively. -->
         <dependency>
             <groupId>io.swagger.parser.v3</groupId>
             <artifactId>swagger-parser</artifactId>
             <version>2.1.42</version>
-        </dependency>
-
-        <!-- JSON processing (version from jackson-bom) -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
         </dependency>
 
         <!-- JUnit 5 for testing (versions from junit-bom; 6.x still RC) -->
@@ -160,17 +132,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Mockito for Mojo testing (versions from mockito-bom; JDK 21 supported) -->
-        <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
@@ -185,11 +146,29 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
-                <configuration>
-                    <source>21</source>
-                    <target>21</target>
-                    <release>21</release>
-                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>enforce-build-environment</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[21,)</version>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9,)</version>
+                                </requireMavenVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -229,10 +208,10 @@
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.11.2</version>
                 <configuration>
-                    <!-- Java 21's strict doclint flags many legitimate Javadoc patterns; relax it so a missing
-                         tag in an internal class doesn't fail the artifact build. -->
-                    <doclint>none</doclint>
-                    <failOnError>false</failOnError>
+                    <!-- Published Javadoc must build cleanly. Only the "missing comment" group is relaxed
+                         so private-ish internals don't need a comment on every accessor. -->
+                    <doclint>all,-missing</doclint>
+                    <failOnError>true</failOnError>
                     <quiet>true</quiet>
                 </configuration>
                 <executions>
@@ -275,7 +254,22 @@
                                     <element>BUNDLE</element>
                                     <limits>
                                         <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                        <limit>
                                             <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>METHOD</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
                                             <value>COVEREDRATIO</value>
                                             <minimum>0.80</minimum>
                                         </limit>
